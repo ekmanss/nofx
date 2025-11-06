@@ -337,23 +337,23 @@ func ValidateForTrading(data *Data) (bool, string) {
 	}
 
 	// 检查信号强度
-	if !IsStrongSignal(data) {
-		signalStrength := GetSignalStrength(data)
-		trendSummary := GetTrendSummary(data)
-		return false, fmt.Sprintf("信号强度不足(强度:%d/70, 趋势:%s)", signalStrength, trendSummary)
-	}
+	//if !IsStrongSignal(data) {
+	//	signalStrength := GetSignalStrength(data)
+	//	trendSummary := GetTrendSummary(data)
+	//	return false, fmt.Sprintf("信号强度不足(强度:%d/70, 趋势:%s)", signalStrength, trendSummary)
+	//}
 
 	// 检查风险等级
-	riskLevel := GetRiskLevel(data)
-	if riskLevel == "🔴 高风险" {
-		return false, "风险等级过高"
-	}
+	//riskLevel := GetRiskLevel(data)
+	//if riskLevel == "🔴 高风险" {
+	//	return false, "风险等级过高"
+	//}
 
 	// 检查震荡市
-	marketCondition := DetectMarketCondition(data)
-	if marketCondition.Condition == "ranging" && marketCondition.Confidence > 60 {
-		return false, fmt.Sprintf("震荡市(置信度%d%%)，避免开仓", marketCondition.Confidence)
-	}
+	//marketCondition := DetectMarketCondition(data)
+	//if marketCondition.Condition == "ranging" && marketCondition.Confidence > 60 {
+	//	return false, fmt.Sprintf("震荡市(置信度%d%%)，避免开仓", marketCondition.Confidence)
+	//}
 
 	return true, "适合交易"
 }
