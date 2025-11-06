@@ -512,8 +512,8 @@ func formatFloatSlice(values []float64) string {
 func formatKlines(klines []Kline) string {
 	var sb strings.Builder
 	for i, k := range klines {
-		sb.WriteString(fmt.Sprintf("  [%d] O: %.2f, H: %.2f, L: %.2f, C: %.2f, V: %.2f\n",
-			i+1, k.Open, k.High, k.Low, k.Close, k.Volume))
+		sb.WriteString(fmt.Sprintf("  [%d] OpenTime: %d, O: %.2f, H: %.2f, L: %.2f, C: %.2f, V: %.2f, CloseTime: %d\n",
+			i+1, k.OpenTime, k.Open, k.High, k.Low, k.Close, k.Volume, k.CloseTime))
 	}
 	return sb.String()
 }
