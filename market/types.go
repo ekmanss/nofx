@@ -8,13 +8,17 @@ type Data struct {
 	CurrentPrice      float64
 	PriceChange1h     float64 // 1小时价格变化百分比
 	PriceChange4h     float64 // 4小时价格变化百分比
+	PriceChange1d     float64 // 日线价格变化百分比
 	CurrentEMA20      float64
 	CurrentMACD       float64
 	CurrentRSI7       float64
 	OpenInterest      *OIData
 	FundingRate       float64
-	IntradaySeries    *IntradayData
+	MultiTimeframe    *MultiTimeframeData
 	LongerTermContext *LongerTermData
+	MarketStructure   *MarketStructure // 市场结构分析
+	FibLevels         *FibLevels       // 斐波那契水平
+	IntradaySeries    *IntradayData    // 保留旧的日内数据以保持兼容性
 }
 
 // OIData Open Interest数据
@@ -42,6 +46,66 @@ type LongerTermData struct {
 	AverageVolume float64
 	MACDValues    []float64
 	RSI14Values   []float64
+}
+
+// ==================== 多时间框架数据结构 ====================
+
+// MultiTimeframeData 多时间框架数据
+type MultiTimeframeData struct {
+	Timeframe15m *TimeframeData
+	Timeframe1h  *TimeframeData
+	Timeframe4h  *TimeframeData
+	Timeframe1d  *TimeframeData // 日线数据
+}
+
+// TimeframeData 单个时间框架数据
+type TimeframeData struct {
+	Timeframe      string
+	CurrentPrice   float64
+	EMA20          float64
+	EMA50          float64
+	MACD           float64
+	RSI7           float64
+	RSI14          float64
+	ATR14          float64
+	Volume         float64
+	PriceSeries    []float64
+	TrendDirection string // "bullish", "bearish", "neutral"
+	SignalStrength int    // 0-100
+}
+
+// ==================== 斐波那契和市场结构相关结构 ====================
+
+// FibLevels 斐波那契水平
+type FibLevels struct {
+	Level236 float64 // 0.236
+	Level382 float64 // 0.382
+	Level500 float64 // 0.5
+	Level618 float64 // 0.618
+	Level705 float64 // 0.705
+	Level786 float64 // 0.786
+	High     float64 // 波段高点
+	Low      float64 // 波段低点
+	Trend    string  // "bullish" or "bearish"
+}
+
+// MarketStructure 市场结构
+type MarketStructure struct {
+	SwingHighs  []float64 // 波段高点序列
+	SwingLows   []float64 // 波段低点序列
+	CurrentBias string    // "bullish", "bearish", "neutral"
+	FibLevels   *FibLevels
+}
+
+// ==================== 震荡市检测相关结构 ====================
+
+// MarketCondition 市场状态结构
+type MarketCondition struct {
+	Condition    string  // "trending", "ranging", "volatile"
+	Confidence   int     // 0-100
+	ATRRatio     float64 // ATR/Price 比率
+	EMASlope     float64 // EMA20斜率
+	PriceChannel float64 // 价格通道宽度
 }
 
 // Binance API 响应结构

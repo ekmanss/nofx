@@ -16,71 +16,80 @@ func Get(symbol string) (*Data, error) {
 	var err error
 	// 标准化symbol
 	symbol = Normalize(symbol)
-	// 获取3分钟K线数据 (最近10个)
-	klines3m, err = WSMonitorCli.GetCurrentKlines(symbol, "3m") // 多获取一些用于计算
+
+	// 获取多时间框架数据
+	multiTimeframe, err := getMultiTimeframeData(symbol)
 	if err != nil {
-		return nil, fmt.Errorf("获取3分钟K线失败: %v", err)
+		return nil, fmt.Errorf("获取多时间框架数据失败: %v", err)
 	}
 
-	// 获取4小时K线数据 (最近10个)
-	klines4h, err = WSMonitorCli.GetCurrentKlines(symbol, "4h") // 多获取用于计算指标
-	if err != nil {
-		return nil, fmt.Errorf("获取4小时K线失败: %v", err)
-	}
-
-	// 计算当前指标 (基于3分钟最新数据)
-	currentPrice := klines3m[len(klines3m)-1].Close
-	currentEMA20 := calculateEMA(klines3m, 20)
-	currentMACD := calculateMACD(klines3m)
-	currentRSI7 := calculateRSI(klines3m, 7)
+	// 使用15分钟作为主要参考时间框架
+	primaryData := multiTimeframe.Timeframe15m
 
 	// 计算价格变化百分比
-	// 1小时价格变化 = 20个3分钟K线前的价格
-	priceChange1h := 0.0
-	if len(klines3m) >= 21 { // 至少需要21根K线 (当前 + 20根前)
-		price1hAgo := klines3m[len(klines3m)-21].Close
-		if price1hAgo > 0 {
-			priceChange1h = ((currentPrice - price1hAgo) / price1hAgo) * 100
-		}
+	priceChange1h := calculatePriceChange(multiTimeframe.Timeframe1h.PriceSeries)
+	priceChange4h := calculatePriceChange(multiTimeframe.Timeframe4h.PriceSeries)
+	priceChange1d := calculatePriceChange(multiTimeframe.Timeframe1d.PriceSeries)
+
+	// 获取3分钟K线数据 (用于日内数据，保持兼容性)
+	klines3m, err = WSMonitorCli.GetCurrentKlines(symbol, "3m")
+	if err != nil {
+		// 如果WebSocket失败，使用15分钟数据作为替代
+		klines3m = []Kline{}
 	}
 
-	// 4小时价格变化 = 1个4小时K线前的价格
-	priceChange4h := 0.0
-	if len(klines4h) >= 2 {
-		price4hAgo := klines4h[len(klines4h)-2].Close
-		if price4hAgo > 0 {
-			priceChange4h = ((currentPrice - price4hAgo) / price4hAgo) * 100
-		}
+	// 获取4小时K线数据 (用于长期数据，保持兼容性)
+	klines4h, err = WSMonitorCli.GetCurrentKlines(symbol, "4h")
+	if err != nil {
+		// 如果WebSocket失败，使用API数据
+		klines4h, _ = getKlinesFromAPI(symbol, "4h", 60)
 	}
 
 	// 获取OI数据
 	oiData, err := getOpenInterestData(symbol)
 	if err != nil {
-		// OI失败不影响整体,使用默认值
 		oiData = &OIData{Latest: 0, Average: 0}
 	}
 
 	// 获取Funding Rate
 	fundingRate, _ := getFundingRate(symbol)
 
-	// 计算日内系列数据
-	intradayData := calculateIntradaySeries(klines3m)
+	// 计算日内系列数据（兼容旧代码）
+	intradayData := &IntradayData{}
+	if len(klines3m) > 0 {
+		intradayData = calculateIntradaySeries(klines3m)
+	}
 
-	// 计算长期数据
-	longerTermData := calculateLongerTermData(klines4h)
+	// 计算长期数据 (基于4小时)
+	longerTermData := calculateLongerTermDataFromKlines(klines4h)
+
+	// 计算市场结构和斐波那契水平（使用日线数据）
+	var marketStructure *MarketStructure
+	var fibLevels *FibLevels
+
+	if multiTimeframe.Timeframe1d != nil {
+		marketStructure = detectMarketStructure(multiTimeframe.Timeframe1d.PriceSeries)
+		if marketStructure != nil {
+			fibLevels = calculateCurrentFibLevels(marketStructure)
+		}
+	}
 
 	return &Data{
 		Symbol:            symbol,
-		CurrentPrice:      currentPrice,
+		CurrentPrice:      primaryData.CurrentPrice,
 		PriceChange1h:     priceChange1h,
 		PriceChange4h:     priceChange4h,
-		CurrentEMA20:      currentEMA20,
-		CurrentMACD:       currentMACD,
-		CurrentRSI7:       currentRSI7,
+		PriceChange1d:     priceChange1d,
+		CurrentEMA20:      primaryData.EMA20,
+		CurrentMACD:       primaryData.MACD,
+		CurrentRSI7:       primaryData.RSI7,
 		OpenInterest:      oiData,
 		FundingRate:       fundingRate,
-		IntradaySeries:    intradayData,
+		MultiTimeframe:    multiTimeframe,
 		LongerTermContext: longerTermData,
+		MarketStructure:   marketStructure,
+		FibLevels:         fibLevels,
+		IntradaySeries:    intradayData,
 	}, nil
 }
 
@@ -357,67 +366,8 @@ func getFundingRate(symbol string) (float64, error) {
 
 // Format 格式化输出市场数据
 func Format(data *Data) string {
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("current_price = %.2f, current_ema20 = %.3f, current_macd = %.3f, current_rsi (7 period) = %.3f\n\n",
-		data.CurrentPrice, data.CurrentEMA20, data.CurrentMACD, data.CurrentRSI7))
-
-	sb.WriteString(fmt.Sprintf("In addition, here is the latest %s open interest and funding rate for perps:\n\n",
-		data.Symbol))
-
-	if data.OpenInterest != nil {
-		sb.WriteString(fmt.Sprintf("Open Interest: Latest: %.2f Average: %.2f\n\n",
-			data.OpenInterest.Latest, data.OpenInterest.Average))
-	}
-
-	sb.WriteString(fmt.Sprintf("Funding Rate: %.2e\n\n", data.FundingRate))
-
-	if data.IntradaySeries != nil {
-		sb.WriteString("Intraday series (3‑minute intervals, oldest → latest):\n\n")
-
-		if len(data.IntradaySeries.MidPrices) > 0 {
-			sb.WriteString(fmt.Sprintf("Mid prices: %s\n\n", formatFloatSlice(data.IntradaySeries.MidPrices)))
-		}
-
-		if len(data.IntradaySeries.EMA20Values) > 0 {
-			sb.WriteString(fmt.Sprintf("EMA indicators (20‑period): %s\n\n", formatFloatSlice(data.IntradaySeries.EMA20Values)))
-		}
-
-		if len(data.IntradaySeries.MACDValues) > 0 {
-			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.IntradaySeries.MACDValues)))
-		}
-
-		if len(data.IntradaySeries.RSI7Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (7‑Period): %s\n\n", formatFloatSlice(data.IntradaySeries.RSI7Values)))
-		}
-
-		if len(data.IntradaySeries.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (14‑Period): %s\n\n", formatFloatSlice(data.IntradaySeries.RSI14Values)))
-		}
-	}
-
-	if data.LongerTermContext != nil {
-		sb.WriteString("Longer‑term context (4‑hour timeframe):\n\n")
-
-		sb.WriteString(fmt.Sprintf("20‑Period EMA: %.3f vs. 50‑Period EMA: %.3f\n\n",
-			data.LongerTermContext.EMA20, data.LongerTermContext.EMA50))
-
-		sb.WriteString(fmt.Sprintf("3‑Period ATR: %.3f vs. 14‑Period ATR: %.3f\n\n",
-			data.LongerTermContext.ATR3, data.LongerTermContext.ATR14))
-
-		sb.WriteString(fmt.Sprintf("Current Volume: %.3f vs. Average Volume: %.3f\n\n",
-			data.LongerTermContext.CurrentVolume, data.LongerTermContext.AverageVolume))
-
-		if len(data.LongerTermContext.MACDValues) > 0 {
-			sb.WriteString(fmt.Sprintf("MACD indicators: %s\n\n", formatFloatSlice(data.LongerTermContext.MACDValues)))
-		}
-
-		if len(data.LongerTermContext.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI indicators (14‑Period): %s\n\n", formatFloatSlice(data.LongerTermContext.RSI14Values)))
-		}
-	}
-
-	return sb.String()
+	// 使用新的完整格式化函数
+	return FormatMarketData(data)
 }
 
 // formatFloatSlice 格式化float64切片为字符串
