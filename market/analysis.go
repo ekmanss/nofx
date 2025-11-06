@@ -338,7 +338,9 @@ func ValidateForTrading(data *Data) (bool, string) {
 
 	// 检查信号强度
 	if !IsStrongSignal(data) {
-		return false, "信号强度不足"
+		signalStrength := GetSignalStrength(data)
+		trendSummary := GetTrendSummary(data)
+		return false, fmt.Sprintf("信号强度不足(强度:%d/70, 趋势:%s)", signalStrength, trendSummary)
 	}
 
 	// 检查风险等级

@@ -10,30 +10,66 @@ import (
 
 // shouldSkipSymbol 判断是否应该跳过某个币种
 func shouldSkipSymbol(data *market.Data, symbol string) string {
+	fmt.Printf("📊 [shouldSkipSymbol] 开始检查币种: %s\n", symbol)
+
+	// 数据有效性检查
 	if data == nil {
+		fmt.Printf("❌ [shouldSkipSymbol] %s - 数据为nil，跳过\n", symbol)
 		return "数据无效"
 	}
+	fmt.Printf("✅ [shouldSkipSymbol] %s - 数据有效性检查通过\n", symbol)
 
 	// 1. 流动性过滤：持仓价值低于15M USD
+	fmt.Printf("🔍 [shouldSkipSymbol] %s - 步骤1: 检查流动性过滤...\n", symbol)
 	if data.OpenInterest != nil && data.CurrentPrice > 0 {
 		oiValue := data.OpenInterest.Latest * data.CurrentPrice
 		oiValueInMillions := oiValue / 1_000_000
+		fmt.Printf("   ├─ OI.Latest=%.2f, CurrentPrice=%.2f\n", data.OpenInterest.Latest, data.CurrentPrice)
+		fmt.Printf("   ├─ OI值计算: %.2f * %.2f = %.2f USDT\n", data.OpenInterest.Latest, data.CurrentPrice, oiValue)
+		fmt.Printf("   ├─ OI值(M): %.2fM USD\n", oiValueInMillions)
+
 		if oiValueInMillions < 15 {
+			fmt.Printf("❌ [shouldSkipSymbol] %s - 流动性检查失败: %.2fM USD < 15M，跳过\n", symbol, oiValueInMillions)
 			return fmt.Sprintf("持仓价值过低(%.2fM USD < 15M)", oiValueInMillions)
+		}
+		fmt.Printf("✅ [shouldSkipSymbol] %s - 流动性检查通过: %.2fM USD >= 15M\n", symbol, oiValueInMillions)
+	} else {
+		// 记录异常情况
+		if data.OpenInterest == nil {
+			fmt.Printf("⚠️  [shouldSkipSymbol] %s - 流动性检查异常: OpenInterest为nil\n", symbol)
+		} else if data.CurrentPrice <= 0 {
+			fmt.Printf("⚠️  [shouldSkipSymbol] %s - 流动性检查异常: CurrentPrice=%.2f (<=0)\n", symbol, data.CurrentPrice)
 		}
 	}
 
 	// 2. 市场状态过滤：高置信度震荡市
-	if market.IsRangingMarket(data) {
+	fmt.Printf("🔍 [shouldSkipSymbol] %s - 步骤2: 检查市场状态过滤...\n", symbol)
+	isRanging := market.IsRangingMarket(data)
+	fmt.Printf("   ├─ IsRangingMarket结果: %v\n", isRanging)
+
+	if isRanging {
 		condition := market.DetectMarketCondition(data)
+		fmt.Printf("   ├─ 市场状态: %s, 置信度: %d%%\n", condition.Condition, condition.Confidence)
+		fmt.Printf("❌ [shouldSkipSymbol] %s - 市场状态检查失败: 高置信度震荡市(%d%%)，跳过\n", symbol, condition.Confidence)
 		return fmt.Sprintf("高置信度震荡市(%d%%)", condition.Confidence)
 	}
+	fmt.Printf("✅ [shouldSkipSymbol] %s - 市场状态检查通过: 非震荡市\n", symbol)
 
 	// 3. 交易适合性检查
-	if shouldAvoid, reason := market.ShouldAvoidTrading(data); shouldAvoid {
-		return reason
+	fmt.Printf("🔍 [shouldSkipSymbol] %s - 步骤3: 检查交易适合性...\n", symbol)
+	shouldAvoid, reason := market.ShouldAvoidTrading(data)
+	fmt.Printf("   ├─ ShouldAvoidTrading结果: shouldAvoid=%v\n", shouldAvoid)
+	if reason != "" {
+		fmt.Printf("   ├─ 原因: %s\n", reason)
 	}
 
+	if shouldAvoid {
+		fmt.Printf("❌ [shouldSkipSymbol] %s - 交易适合性检查失败: %s，跳过\n", symbol, reason)
+		return reason
+	}
+	fmt.Printf("✅ [shouldSkipSymbol] %s - 交易适合性检查通过\n", symbol)
+
+	fmt.Printf("🎉 [shouldSkipSymbol] %s - 所有检查通过，可以交易\n", symbol)
 	return ""
 }
 
