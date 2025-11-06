@@ -15,6 +15,11 @@ type Data struct {
 	FundingRate       float64
 	IntradaySeries    *IntradayData
 	LongerTermContext *LongerTermData
+	Klines15m         []Kline // 15分钟完整K线数据
+	Klines1h          []Kline // 1小时完整K线数据
+	Klines4h          []Kline // 4小时完整K线数据
+	Klines1d          []Kline // 1天完整K线数据
+	Klines1w          []Kline // 1周完整K线数据
 }
 
 // OIData Open Interest数据

@@ -10,9 +10,28 @@ import (
 	"strings"
 )
 
+// getKlinesWithLimit 获取指定数量的K线数据
+func getKlinesWithLimit(symbol string, interval string, limit int) ([]Kline, error) {
+	// 先尝试从缓存获取
+	allKlines, err := WSMonitorCli.GetCurrentKlines(symbol, interval)
+	if err != nil {
+		// 如果缓存没有，直接从API获取指定数量
+		apiClient := NewAPIClient()
+		return apiClient.GetKlines(symbol, interval, limit)
+	}
+
+	// 如果缓存中的数据少于请求的数量，返回全部
+	if len(allKlines) <= limit {
+		return allKlines, nil
+	}
+
+	// 返回最近的limit条数据
+	return allKlines[len(allKlines)-limit:], nil
+}
+
 // Get 获取指定代币的市场数据
 func Get(symbol string) (*Data, error) {
-	var klines3m, klines4h []Kline
+	var klines3m, klines15m, klines1h, klines4h, klines1d, klines1w []Kline
 	var err error
 	// 标准化symbol
 	symbol = Normalize(symbol)
@@ -22,10 +41,34 @@ func Get(symbol string) (*Data, error) {
 		return nil, fmt.Errorf("获取3分钟K线失败: %v", err)
 	}
 
-	// 获取4小时K线数据 (最近10个)
-	klines4h, err = WSMonitorCli.GetCurrentKlines(symbol, "4h") // 多获取用于计算指标
+	// 获取15分钟K线数据 (最近20条)
+	klines15m, err = getKlinesWithLimit(symbol, "15m", 20)
+	if err != nil {
+		return nil, fmt.Errorf("获取15分钟K线失败: %v", err)
+	}
+
+	// 获取1小时K线数据 (最近20条)
+	klines1h, err = getKlinesWithLimit(symbol, "1h", 20)
+	if err != nil {
+		return nil, fmt.Errorf("获取1小时K线失败: %v", err)
+	}
+
+	// 获取4小时K线数据 (最近20条)
+	klines4h, err = getKlinesWithLimit(symbol, "4h", 20)
 	if err != nil {
 		return nil, fmt.Errorf("获取4小时K线失败: %v", err)
+	}
+
+	// 获取1天K线数据 (最近20条)
+	klines1d, err = getKlinesWithLimit(symbol, "1d", 20)
+	if err != nil {
+		return nil, fmt.Errorf("获取1天K线失败: %v", err)
+	}
+
+	// 获取1周K线数据 (最近20条)
+	klines1w, err = getKlinesWithLimit(symbol, "1w", 20)
+	if err != nil {
+		return nil, fmt.Errorf("获取1周K线失败: %v", err)
 	}
 
 	// 计算当前指标 (基于3分钟最新数据)
@@ -81,6 +124,11 @@ func Get(symbol string) (*Data, error) {
 		FundingRate:       fundingRate,
 		IntradaySeries:    intradayData,
 		LongerTermContext: longerTermData,
+		Klines15m:         klines15m,
+		Klines1h:          klines1h,
+		Klines4h:          klines4h,
+		Klines1d:          klines1d,
+		Klines1w:          klines1w,
 	}, nil
 }
 
@@ -417,6 +465,37 @@ func Format(data *Data) string {
 		}
 	}
 
+	// 完整K线数据
+	if len(data.Klines15m) > 0 {
+		sb.WriteString(fmt.Sprintf("Complete 15-minute Klines (Total: %d):\n", len(data.Klines15m)))
+		sb.WriteString(formatKlines(data.Klines15m))
+		sb.WriteString("\n")
+	}
+
+	if len(data.Klines1h) > 0 {
+		sb.WriteString(fmt.Sprintf("Complete 1-hour Klines (Total: %d):\n", len(data.Klines1h)))
+		sb.WriteString(formatKlines(data.Klines1h))
+		sb.WriteString("\n")
+	}
+
+	if len(data.Klines4h) > 0 {
+		sb.WriteString(fmt.Sprintf("Complete 4-hour Klines (Total: %d):\n", len(data.Klines4h)))
+		sb.WriteString(formatKlines(data.Klines4h))
+		sb.WriteString("\n")
+	}
+
+	if len(data.Klines1d) > 0 {
+		sb.WriteString(fmt.Sprintf("Complete 1-day Klines (Total: %d):\n", len(data.Klines1d)))
+		sb.WriteString(formatKlines(data.Klines1d))
+		sb.WriteString("\n")
+	}
+
+	if len(data.Klines1w) > 0 {
+		sb.WriteString(fmt.Sprintf("Complete 1-week Klines (Total: %d):\n", len(data.Klines1w)))
+		sb.WriteString(formatKlines(data.Klines1w))
+		sb.WriteString("\n")
+	}
+
 	return sb.String()
 }
 
@@ -427,6 +506,16 @@ func formatFloatSlice(values []float64) string {
 		strValues[i] = fmt.Sprintf("%.3f", v)
 	}
 	return "[" + strings.Join(strValues, ", ") + "]"
+}
+
+// formatKlines 格式化K线数据为字符串
+func formatKlines(klines []Kline) string {
+	var sb strings.Builder
+	for i, k := range klines {
+		sb.WriteString(fmt.Sprintf("  [%d] O: %.2f, H: %.2f, L: %.2f, C: %.2f, V: %.2f\n",
+			i+1, k.Open, k.High, k.Low, k.Close, k.Volume))
+	}
+	return sb.String()
 }
 
 // Normalize 标准化symbol,确保是USDT交易对
