@@ -403,9 +403,18 @@ func GetTrendSummary(data *Data) string {
 
 // GetSignalStrength 获取综合信号强度
 func GetSignalStrength(data *Data) int {
-	if data == nil || data.MultiTimeframe == nil {
+	fmt.Printf("📊 [GetSignalStrength] 开始计算综合信号强度\n")
+
+	// 数据有效性检查
+	if data == nil {
+		fmt.Printf("❌ [GetSignalStrength] data为nil，返回0\n")
 		return 0
 	}
+	if data.MultiTimeframe == nil {
+		fmt.Printf("❌ [GetSignalStrength] MultiTimeframe为nil，返回0\n")
+		return 0
+	}
+	fmt.Printf("✅ [GetSignalStrength] 数据有效性检查通过\n")
 
 	var totalStrength int
 	var count int
@@ -418,16 +427,33 @@ func GetSignalStrength(data *Data) int {
 		data.MultiTimeframe.Timeframe1d,
 	}
 
-	for _, tf := range timeframes {
+	timeframeNames := []string{"15m", "1h", "4h", "1d"}
+
+	fmt.Printf("🔍 [GetSignalStrength] 遍历4个时间框架收集信号强度...\n")
+	for i, tf := range timeframes {
+		tfName := timeframeNames[i]
 		if tf != nil {
+			fmt.Printf("   ├─ %s: SignalStrength=%d, TrendDirection=%s\n",
+				tfName, tf.SignalStrength, tf.TrendDirection)
 			totalStrength += tf.SignalStrength
 			count++
+		} else {
+			fmt.Printf("   ├─ %s: nil (跳过)\n", tfName)
 		}
 	}
 
+	fmt.Printf("📈 [GetSignalStrength] 统计结果:\n")
+	fmt.Printf("   ├─ 有效时间框架数: %d/4\n", count)
+	fmt.Printf("   ├─ 总信号强度: %d\n", totalStrength)
+
 	if count > 0 {
-		return totalStrength / count
+		avgStrength := totalStrength / count
+		fmt.Printf("   ├─ 平均信号强度: %d / %d = %d\n", totalStrength, count, avgStrength)
+		fmt.Printf("✅ [GetSignalStrength] 计算完成，返回综合信号强度: %d\n", avgStrength)
+		return avgStrength
 	}
+
+	fmt.Printf("⚠️  [GetSignalStrength] 无有效时间框架数据，返回0\n")
 	return 0
 }
 
