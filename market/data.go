@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // getKlinesWithLimit 获取指定数量的K线数据
@@ -511,9 +512,13 @@ func formatFloatSlice(values []float64) string {
 // formatKlines 格式化K线数据为字符串
 func formatKlines(klines []Kline) string {
 	var sb strings.Builder
+	// UTC+8 timezone
+	utc8 := time.FixedZone("UTC+8", 8*60*60)
 	for i, k := range klines {
-		sb.WriteString(fmt.Sprintf("  [%d] OpenTime: %d, O: %.2f, H: %.2f, L: %.2f, C: %.2f, V: %.2f, CloseTime: %d\n",
-			i+1, k.OpenTime, k.Open, k.High, k.Low, k.Close, k.Volume, k.CloseTime))
+		// Convert millisecond timestamp to time
+		openTime := time.Unix(k.OpenTime/1000, (k.OpenTime%1000)*1000000).In(utc8)
+		sb.WriteString(fmt.Sprintf("  [%d] OpenTime: %s, O: %.2f, H: %.2f, L: %.2f, C: %.2f, V: %.2f\n",
+			i+1, openTime.Format("2006-01-02 15:04:05"), k.Open, k.High, k.Low, k.Close, k.Volume))
 	}
 	return sb.String()
 }
