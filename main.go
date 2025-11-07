@@ -15,64 +15,71 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/joho/godotenv"
 )
 
-// LeverageConfig 杠杆配置
-type LeverageConfig struct {
-	BTCETHLeverage  int `json:"btc_eth_leverage"`
-	AltcoinLeverage int `json:"altcoin_leverage"`
-}
-
 // ConfigFile 配置文件结构，只包含需要同步到数据库的字段
+// TODO 现在与config.Config相同，未来会被替换， 现在为了兼容性不得不保留当前文件
 type ConfigFile struct {
-	AdminMode          bool           `json:"admin_mode"`
-	BetaMode           bool           `json:"beta_mode"`
-	APIServerPort      int            `json:"api_server_port"`
-	UseDefaultCoins    bool           `json:"use_default_coins"`
-	DefaultCoins       []string       `json:"default_coins"`
-	CoinPoolAPIURL     string         `json:"coin_pool_api_url"`
-	OITopAPIURL        string         `json:"oi_top_api_url"`
-	MaxDailyLoss       float64        `json:"max_daily_loss"`
-	MaxDrawdown        float64        `json:"max_drawdown"`
-	StopTradingMinutes int            `json:"stop_trading_minutes"`
-	Leverage           LeverageConfig `json:"leverage"`
-	JWTSecret          string         `json:"jwt_secret"`
-	DataKLineTime      string         `json:"data_k_line_time"`
+	AdminMode          bool                  `json:"admin_mode"`
+	BetaMode           bool                  `json:"beta_mode"`
+	APIServerPort      int                   `json:"api_server_port"`
+	UseDefaultCoins    bool                  `json:"use_default_coins"`
+	DefaultCoins       []string              `json:"default_coins"`
+	CoinPoolAPIURL     string                `json:"coin_pool_api_url"`
+	OITopAPIURL        string                `json:"oi_top_api_url"`
+	MaxDailyLoss       float64               `json:"max_daily_loss"`
+	MaxDrawdown        float64               `json:"max_drawdown"`
+	StopTradingMinutes int                   `json:"stop_trading_minutes"`
+	Leverage           config.LeverageConfig `json:"leverage"`
+	JWTSecret          string                `json:"jwt_secret"`
+	DataKLineTime      string                `json:"data_k_line_time"`
+	Log                *config.LogConfig     `json:"log"` // 日志配置
 }
 
-// syncConfigToDatabase 从config.json读取配置并同步到数据库
-func syncConfigToDatabase(database *config.Database) error {
+// loadConfigFile 读取并解析config.json文件
+func loadConfigFile() (*ConfigFile, error) {
 	// 检查config.json是否存在
 	if _, err := os.Stat("config.json"); os.IsNotExist(err) {
-		log.Printf("📄 config.json不存在，跳过同步")
-		return nil
+		log.Printf("📄 config.json不存在，使用默认配置")
+		return &ConfigFile{}, nil
 	}
 
 	// 读取config.json
 	data, err := os.ReadFile("config.json")
 	if err != nil {
-		return fmt.Errorf("读取config.json失败: %w", err)
+		return nil, fmt.Errorf("读取config.json失败: %w", err)
 	}
 
 	// 解析JSON
 	var configFile ConfigFile
 	if err := json.Unmarshal(data, &configFile); err != nil {
-		return fmt.Errorf("解析config.json失败: %w", err)
+		return nil, fmt.Errorf("解析config.json失败: %w", err)
+	}
+
+	return &configFile, nil
+}
+
+// syncConfigToDatabase 将配置同步到数据库
+func syncConfigToDatabase(database *config.Database, configFile *ConfigFile) error {
+	if configFile == nil {
+		return nil
 	}
 
 	log.Printf("🔄 开始同步config.json到数据库...")
 
 	// 同步各配置项到数据库
 	configs := map[string]string{
-		"admin_mode":            fmt.Sprintf("%t", configFile.AdminMode),
-		"beta_mode":             fmt.Sprintf("%t", configFile.BetaMode),
-		"api_server_port":       strconv.Itoa(configFile.APIServerPort),
-		"use_default_coins":     fmt.Sprintf("%t", configFile.UseDefaultCoins),
-		"coin_pool_api_url":     configFile.CoinPoolAPIURL,
-		"oi_top_api_url":        configFile.OITopAPIURL,
-		"max_daily_loss":        fmt.Sprintf("%.1f", configFile.MaxDailyLoss),
-		"max_drawdown":          fmt.Sprintf("%.1f", configFile.MaxDrawdown),
-		"stop_trading_minutes":  strconv.Itoa(configFile.StopTradingMinutes),
+		"admin_mode":           fmt.Sprintf("%t", configFile.AdminMode),
+		"beta_mode":            fmt.Sprintf("%t", configFile.BetaMode),
+		"api_server_port":      strconv.Itoa(configFile.APIServerPort),
+		"use_default_coins":    fmt.Sprintf("%t", configFile.UseDefaultCoins),
+		"coin_pool_api_url":    configFile.CoinPoolAPIURL,
+		"oi_top_api_url":       configFile.OITopAPIURL,
+		"max_daily_loss":       fmt.Sprintf("%.1f", configFile.MaxDailyLoss),
+		"max_drawdown":         fmt.Sprintf("%.1f", configFile.MaxDrawdown),
+		"stop_trading_minutes": strconv.Itoa(configFile.StopTradingMinutes),
 	}
 
 	// 同步default_coins（转换为JSON字符串存储）
@@ -112,7 +119,7 @@ func syncConfigToDatabase(database *config.Database) error {
 // loadBetaCodesToDatabase 加载内测码文件到数据库
 func loadBetaCodesToDatabase(database *config.Database) error {
 	betaCodeFile := "beta_codes.txt"
-	
+
 	// 检查内测码文件是否存在
 	if _, err := os.Stat(betaCodeFile); os.IsNotExist(err) {
 		log.Printf("📄 内测码文件 %s 不存在，跳过加载", betaCodeFile)
@@ -126,7 +133,7 @@ func loadBetaCodesToDatabase(database *config.Database) error {
 	}
 
 	log.Printf("🔄 发现内测码文件 %s (%.1f KB)，开始加载...", betaCodeFile, float64(fileInfo.Size())/1024)
-	
+
 	// 加载内测码到数据库
 	err = database.LoadBetaCodesFromFile(betaCodeFile)
 	if err != nil {
@@ -150,10 +157,20 @@ func main() {
 	fmt.Println("╚════════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
+	// Load environment variables from .env file if present (for local/dev runs)
+	// In Docker Compose, variables are injected by the runtime and this is harmless.
+	_ = godotenv.Load()
+
 	// 初始化数据库配置
 	dbPath := "config.db"
 	if len(os.Args) > 1 {
 		dbPath = os.Args[1]
+	}
+
+	// 读取配置文件
+	configFile, err := loadConfigFile()
+	if err != nil {
+		log.Fatalf("❌ 读取config.json失败: %v", err)
 	}
 
 	log.Printf("📋 初始化配置数据库: %s", dbPath)
@@ -164,7 +181,7 @@ func main() {
 	defer database.Close()
 
 	// 同步config.json到数据库
-	if err := syncConfigToDatabase(database); err != nil {
+	if err := syncConfigToDatabase(database, configFile); err != nil {
 		log.Printf("⚠️  同步config.json到数据库失败: %v", err)
 	}
 
@@ -190,15 +207,17 @@ func main() {
 	}
 	auth.SetJWTSecret(jwtSecret)
 
-	// 在管理员模式下，确保admin用户存在
+	// 管理员模式下需要管理员密码，缺失则退出
 	if adminMode {
-		err := database.EnsureAdminUser()
-		if err != nil {
-			log.Printf("⚠️  创建admin用户失败: %v", err)
-		} else {
-			log.Printf("✓ 管理员模式已启用，无需登录")
+		adminPassword := os.Getenv("NOFX_ADMIN_PASSWORD")
+		if adminPassword == "" {
+			log.Fatalf("Admin mode is enabled but NOFX_ADMIN_PASSWORD is missing. Set NOFX_ADMIN_PASSWORD and restart.")
+		}
+		if err := auth.SetAdminPasswordFromPlain(adminPassword); err != nil {
+			log.Fatalf("Failed to set admin password: %v", err)
 		}
 		auth.SetAdminMode(true)
+		log.Printf("✓ Admin mode enabled. All API endpoints require admin authentication.")
 	}
 
 	log.Printf("✓ 配置数据库初始化成功")
@@ -273,6 +292,15 @@ func main() {
 				trader.InitialBalance, status)
 		}
 	}
+
+	// 创建初始化上下文
+	// TODO : 传入实际配置, 现在并未实际使用，未来所有模块初始化都将通过上下文传递配置
+	// ctx := bootstrap.NewContext(&config.Config{})
+
+	// // 执行所有初始化钩子
+	// if err := bootstrap.Run(ctx); err != nil {
+	// 	log.Fatalf("初始化失败: %v", err)
+	// }
 
 	fmt.Println()
 	fmt.Println("🤖 AI全权决策模式:")
