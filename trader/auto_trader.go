@@ -407,6 +407,28 @@ func (at *AutoTrader) runCycle() error {
 		return nil
 	}
 
+	// 2. 检查是否已有持仓，如果有则跳过本轮决策
+	positions, err := at.trader.GetPositions()
+	if err == nil {
+		hasPosition := false
+		for _, pos := range positions {
+			quantity := pos["positionAmt"].(float64)
+			if quantity != 0 {
+				hasPosition = true
+				break
+			}
+		}
+		if hasPosition {
+			log.Printf("⏭️  检测到已有持仓，跳过本轮AI决策")
+			record.Success = true
+			record.ErrorMessage = "已有持仓，跳过决策"
+			at.decisionLogger.LogDecision(record)
+			return nil
+		}
+	} else {
+		log.Printf("⚠️  检查持仓失败: %v，继续执行", err)
+	}
+
 	// 2. 重置日盈亏（每天重置）
 	if time.Since(at.lastResetTime) > 24*time.Hour {
 		at.dailyPnL = 0
