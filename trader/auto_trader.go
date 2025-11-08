@@ -348,6 +348,7 @@ func (at *AutoTrader) Stop() {
 
 // runCycle 运行一个交易周期（使用AI全权决策）
 func (at *AutoTrader) runCycle() error {
+	return nil
 	at.callCount++
 
 	log.Print("\n" + strings.Repeat("=", 70) + "\n")
@@ -1799,4 +1800,9 @@ func (at *AutoTrader) getPositionFirstSeenTime(posKey string) int64 {
 	at.positionTimeMu.RLock()
 	defer at.positionTimeMu.RUnlock()
 	return at.positionFirstSeenTime[posKey]
+}
+
+// CancelStopLossOrders 取消指定币种的所有止损单（用于调试）
+func (at *AutoTrader) CancelStopLossOrders(symbol string) error {
+	return at.trader.CancelStopLossOrders(symbol)
 }

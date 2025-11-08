@@ -154,6 +154,9 @@ func (s *Server) setupRoutes() {
 			protected.GET("/decisions/latest", s.handleLatestDecisions)
 			protected.GET("/statistics", s.handleStatistics)
 			protected.GET("/performance", s.handlePerformance)
+
+			// 调试接口
+			protected.POST("/debug/cancel-stop-loss", s.handleDebugCancelStopLoss)
 		}
 	}
 }
@@ -2294,4 +2297,59 @@ func (s *Server) reloadPromptTemplatesWithLog(templateName string) {
 	} else {
 		log.Printf("✓ 已重新加载系统提示词模板 [当前使用: %s]", templateName)
 	}
+}
+
+// handleDebugCancelStopLoss 调试接口 - 查询并取消所有止损单
+func (s *Server) handleDebugCancelStopLoss(c *gin.Context) {
+	var req struct {
+		TraderID string `json:"trader_id" binding:"required"`
+		Symbol   string `json:"symbol" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// 获取当前用户ID
+	userID := c.GetString("user_id")
+
+	// 先尝试加载用户的 traders 到内存（如果还没加载）
+	if err := s.traderManager.LoadUserTraders(s.database, userID); err != nil {
+		log.Printf("🐛 [调试] ⚠️ 加载用户 traders 失败: %v", err)
+	}
+
+	// 获取 trader 实例
+	trader, err := s.traderManager.GetTrader(req.TraderID)
+	if err != nil {
+		// 提供可用的 trader ID 列表帮助调试
+		availableIDs := s.traderManager.GetTraderIDs()
+		log.Printf("🐛 [调试] 可用的 trader IDs: %v", availableIDs)
+		c.JSON(http.StatusNotFound, gin.H{
+			"error":         fmt.Sprintf("交易员不存在: %v", err),
+			"available_ids": availableIDs,
+			"hint":          "请使用 GET /api/my-traders 查看您的交易员列表",
+		})
+		return
+	}
+
+	log.Printf("🐛 [调试] 开始取消 %s 的止损单", req.Symbol)
+
+	// 取消止损单
+	err = trader.CancelStopLossOrders(req.Symbol)
+	if err != nil {
+		log.Printf("🐛 [调试] 取消止损单失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"success": false,
+			"error":   fmt.Sprintf("取消止损单失败: %v", err),
+		})
+		return
+	}
+
+	log.Printf("🐛 [调试] ✅ 成功取消 %s 的止损单", req.Symbol)
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": fmt.Sprintf("已成功取消 %s 的所有止损单", req.Symbol),
+		"symbol":  req.Symbol,
+	})
 }
