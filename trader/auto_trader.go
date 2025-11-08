@@ -97,16 +97,17 @@ type AutoTrader struct {
 	lastResetTime         time.Time
 	stopUntil             time.Time
 	isRunning             bool
-	startTime             time.Time          // 系统启动时间
-	callCount             int                // AI调用次数
-	positionFirstSeenTime map[string]int64   // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
-	stopMonitorCh         chan struct{}      // 用于停止监控goroutine
-	monitorWg             sync.WaitGroup     // 用于等待监控goroutine结束
-	peakPnLCache          map[string]float64 // 最高收益缓存 (symbol -> 峰值盈亏百分比)
-	peakPnLCacheMutex     sync.RWMutex       // 缓存读写锁
-	lastBalanceSyncTime   time.Time          // 上次余额同步时间
-	database              interface{}        // 数据库引用（用于自动更新余额）
-	userID                string             // 用户ID
+	startTime             time.Time            // 系统启动时间
+	callCount             int                  // AI调用次数
+	positionFirstSeenTime map[string]int64     // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
+	stopMonitorCh         chan struct{}        // 用于停止监控goroutine
+	monitorWg             sync.WaitGroup       // 用于等待监控goroutine结束
+	peakPnLCache          map[string]float64   // 最高收益缓存 (symbol -> 峰值盈亏百分比)
+	peakPnLCacheMutex     sync.RWMutex         // 缓存读写锁
+	lastBalanceSyncTime   time.Time            // 上次余额同步时间
+	database              interface{}          // 数据库引用（用于自动更新余额）
+	userID                string               // 用户ID
+	trailingStopMonitor   *TrailingStopMonitor // 动态追踪止损监控器
 }
 
 // NewAutoTrader 创建自动交易器
@@ -208,7 +209,7 @@ func NewAutoTrader(config AutoTraderConfig, database interface{}, userID string)
 		systemPromptTemplate = "adaptive"
 	}
 
-	return &AutoTrader{
+	at := &AutoTrader{
 		id:                    config.ID,
 		name:                  config.Name,
 		aiModel:               config.AIModel,
@@ -233,7 +234,12 @@ func NewAutoTrader(config AutoTraderConfig, database interface{}, userID string)
 		lastBalanceSyncTime:   time.Now(), // 初始化为当前时间
 		database:              database,
 		userID:                userID,
-	}, nil
+	}
+
+	// 初始化动态追踪止损监控器
+	at.trailingStopMonitor = NewTrailingStopMonitor(at)
+
+	return at, nil
 }
 
 // Run 运行自动交易主循环
@@ -246,6 +252,9 @@ func (at *AutoTrader) Run() error {
 
 	// 启动回撤监控
 	at.startDrawdownMonitor()
+
+	// 启动追踪止损监控器（独立运行，每5秒检查一次）
+	at.trailingStopMonitor.Start()
 
 	ticker := time.NewTicker(at.config.ScanInterval)
 	defer ticker.Stop()
@@ -272,6 +281,10 @@ func (at *AutoTrader) Stop() {
 	at.isRunning = false
 	close(at.stopMonitorCh) // 通知监控goroutine停止
 	at.monitorWg.Wait()     // 等待监控goroutine结束
+
+	// 停止追踪止损监控器
+	at.trailingStopMonitor.Stop()
+
 	log.Println("⏹ 自动交易系统停止")
 }
 
@@ -916,6 +929,9 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *decision.Decision, ac
 		actionRecord.OrderID = orderID
 	}
 
+	// 清除追踪止损缓存
+	at.trailingStopMonitor.ClearPosition(decision.Symbol, "long")
+
 	log.Printf("  ✓ 平仓成功")
 	return nil
 }
@@ -941,6 +957,9 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *decision.Decision, a
 	if orderID, ok := order["orderId"].(int64); ok {
 		actionRecord.OrderID = orderID
 	}
+
+	// 清除追踪止损缓存
+	at.trailingStopMonitor.ClearPosition(decision.Symbol, "short")
 
 	log.Printf("  ✓ 平仓成功")
 	return nil
@@ -1603,12 +1622,16 @@ func (at *AutoTrader) emergencyClosePosition(symbol, side string) error {
 			return err
 		}
 		log.Printf("✅ 紧急平多仓成功，订单ID: %v", order["orderId"])
+		// 清除追踪止损缓存
+		at.trailingStopMonitor.ClearPosition(symbol, "long")
 	case "short":
 		order, err := at.trader.CloseShort(symbol, 0) // 0 = 全部平仓
 		if err != nil {
 			return err
 		}
 		log.Printf("✅ 紧急平空仓成功，订单ID: %v", order["orderId"])
+		// 清除追踪止损缓存
+		at.trailingStopMonitor.ClearPosition(symbol, "short")
 	default:
 		return fmt.Errorf("未知的持仓方向: %s", side)
 	}
