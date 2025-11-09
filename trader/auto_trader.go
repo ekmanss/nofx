@@ -247,7 +247,7 @@ func (at *AutoTrader) Run() error {
 	at.isRunning = true
 	at.stopMonitorCh = make(chan struct{})
 	at.startTime = time.Now()
-	
+
 	log.Println("🚀 AI驱动自动交易系统启动")
 	log.Printf("💰 初始余额: %.2f USDT", at.initialBalance)
 	log.Printf("⚙️  扫描间隔: %v", at.config.ScanInterval)
@@ -256,7 +256,7 @@ func (at *AutoTrader) Run() error {
 	defer at.monitorWg.Done()
 
 	// 启动回撤监控
-	at.startDrawdownMonitor()
+	//at.startDrawdownMonitor()
 
 	// 启动追踪止损监控器（独立运行，每5秒检查一次）
 	at.trailingStopMonitor.Start()

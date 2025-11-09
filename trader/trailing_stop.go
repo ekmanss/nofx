@@ -317,7 +317,18 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, ind
 	newStopLoss := m.calculateTrailingStopPrice(pos.Side, pos.EntryPrice, peakPrice)
 
 	log.Printf("      🔍 验证止损价格有效性...")
-	if !m.isStopLossValid(pos.Side, pos.EntryPrice, newStopLoss, pos.MarkPrice) {
+	isValid, triggerClose := m.isStopLossValid(pos.Side, pos.EntryPrice, newStopLoss, pos.MarkPrice)
+	if triggerClose {
+		log.Printf("      🚨 当前价格已触发追踪止损，执行紧急平仓流程")
+		if err := m.executeMarketClose(pos.Symbol, pos.Side, pos.MarkPrice); err != nil {
+			log.Printf("      ❌ 紧急平仓失败: %v", err)
+			return false, false
+		}
+		log.Printf("      ✅ 紧急平仓完成，结束此持仓检查")
+		return true, false
+	}
+
+	if !isValid {
 		log.Printf("      ❌ 止损价格验证失败，跳过此持仓")
 		return false, true
 	}
@@ -525,8 +536,8 @@ func (m *TrailingStopMonitor) calculateTrailingStopPrice(side string, entryPrice
 	return stopLoss
 }
 
-// isStopLossValid 验证止损价是否有效
-func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLoss, currentPrice float64) bool {
+// isStopLossValid 验证止损价是否有效，并返回是否需要立即触发紧急平仓
+func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLoss, currentPrice float64) (bool, bool) {
 	log.Printf("         [验证] 止损价: %.4f | 入场价: %.4f | 当前价: %.4f", newStopLoss, entryPrice, currentPrice)
 
 	if side == "long" {
@@ -535,7 +546,7 @@ func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLo
 		log.Printf("         [验证-多单] 检查1: 止损价 %.4f > 入场价 %.4f?", newStopLoss, entryPrice)
 		if newStopLoss <= entryPrice {
 			log.Printf("         [验证-多单] ❌ 失败: 止损价 %.4f ≤ 入场价 %.4f（无法保护利润）", newStopLoss, entryPrice)
-			return false
+			return false, false
 		}
 		log.Printf("         [验证-多单] ✅ 通过: 止损价高于入场价，可保护利润")
 
@@ -543,7 +554,7 @@ func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLo
 		log.Printf("         [验证-多单] 检查2: 止损价 %.4f < 当前价 %.4f?", newStopLoss, currentPrice)
 		if newStopLoss >= currentPrice {
 			log.Printf("         [验证-多单] ❌ 失败: 止损价 %.4f ≥ 当前价 %.4f（会立即触发）", newStopLoss, currentPrice)
-			return false
+			return false, true
 		}
 		log.Printf("         [验证-多单] ✅ 通过: 止损价低于当前价，合理")
 
@@ -553,7 +564,7 @@ func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLo
 		log.Printf("         [验证-空单] 检查1: 止损价 %.4f < 入场价 %.4f?", newStopLoss, entryPrice)
 		if newStopLoss >= entryPrice {
 			log.Printf("         [验证-空单] ❌ 失败: 止损价 %.4f ≥ 入场价 %.4f（无法保护利润）", newStopLoss, entryPrice)
-			return false
+			return false, false
 		}
 		log.Printf("         [验证-空单] ✅ 通过: 止损价低于入场价，可保护利润")
 
@@ -561,13 +572,13 @@ func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLo
 		log.Printf("         [验证-空单] 检查2: 止损价 %.4f > 当前价 %.4f?", newStopLoss, currentPrice)
 		if newStopLoss <= currentPrice {
 			log.Printf("         [验证-空单] ❌ 失败: 止损价 %.4f ≤ 当前价 %.4f（会立即触发）", newStopLoss, currentPrice)
-			return false
+			return false, true
 		}
 		log.Printf("         [验证-空单] ✅ 通过: 止损价高于当前价，合理")
 	}
 
 	log.Printf("         [验证] ✅ 所有检查通过，止损价有效")
-	return true
+	return true, false
 }
 
 // updateStopLoss 更新止损价（使用统一的止损更新逻辑）
