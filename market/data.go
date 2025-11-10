@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"math"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,6 +82,14 @@ func Get(symbol string) (*Data, error) {
 	klines1w, err = getKlinesWithLimit(symbol, "1w", 20)
 	if err != nil {
 		return nil, fmt.Errorf("获取1周K线失败: %v", err)
+	}
+
+	// 检查数据是否为空
+	if len(klines3m) == 0 {
+		return nil, fmt.Errorf("3分钟K线数据为空")
+	}
+	if len(klines4h) == 0 {
+		return nil, fmt.Errorf("4小时K线数据为空")
 	}
 
 	// 计算当前指标 (基于3分钟最新数据)
@@ -355,7 +362,8 @@ func calculateLongerTermData(klines []Kline) *LongerTermData {
 func getOpenInterestData(symbol string) (*OIData, error) {
 	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/openInterest?symbol=%s", symbol)
 
-	resp, err := http.Get(url)
+	apiClient := NewAPIClient()
+	resp, err := apiClient.client.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -399,7 +407,8 @@ func getFundingRate(symbol string) (float64, error) {
 	// 缓存过期或不存在，调用 API
 	url := fmt.Sprintf("https://fapi.binance.com/fapi/v1/premiumIndex?symbol=%s", symbol)
 
-	resp, err := http.Get(url)
+	apiClient := NewAPIClient()
+	resp, err := apiClient.client.Get(url)
 	if err != nil {
 		return 0, err
 	}
