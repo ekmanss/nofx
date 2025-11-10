@@ -44,7 +44,10 @@ func getKlinesWithLimit(symbol string, interval string, limit int) ([]Kline, err
 
 // Get 获取指定代币的市场数据
 func Get(symbol string) (*Data, error) {
-	var klines3m, klines15m, klines1h, klines4h, klines1d, klines1w []Kline
+	var (
+		klines3m, klines15m, klines1h, klines1d, klines1w []Kline
+		klines4hFull, klines4h                            []Kline
+	)
 	var err error
 	// 标准化symbol
 	symbol = Normalize(symbol)
@@ -66,8 +69,8 @@ func Get(symbol string) (*Data, error) {
 		return nil, fmt.Errorf("获取1小时K线失败: %v", err)
 	}
 
-	// 获取4小时K线数据 (最近20条)
-	klines4h, err = getKlinesWithLimit(symbol, "4h", 20)
+	// 获取4小时K线数据 (抓取至少60条用于长周期指标)
+	klines4hFull, err = getKlinesWithLimit(symbol, "4h", 60)
 	if err != nil {
 		return nil, fmt.Errorf("获取4小时K线失败: %v", err)
 	}
@@ -88,8 +91,14 @@ func Get(symbol string) (*Data, error) {
 	if len(klines3m) == 0 {
 		return nil, fmt.Errorf("3分钟K线数据为空")
 	}
-	if len(klines4h) == 0 {
+	if len(klines4hFull) == 0 {
 		return nil, fmt.Errorf("4小时K线数据为空")
+	}
+
+	// 对外返回的4小时K线保持20条，计算仍使用全部数据
+	klines4h = klines4hFull
+	if len(klines4h) > 20 {
+		klines4h = klines4h[len(klines4h)-20:]
 	}
 
 	// 计算当前指标 (基于3分钟最新数据)
@@ -110,8 +119,8 @@ func Get(symbol string) (*Data, error) {
 
 	// 4小时价格变化 = 1个4小时K线前的价格
 	priceChange4h := 0.0
-	if len(klines4h) >= 2 {
-		price4hAgo := klines4h[len(klines4h)-2].Close
+	if len(klines4hFull) >= 2 {
+		price4hAgo := klines4hFull[len(klines4hFull)-2].Close
 		if price4hAgo > 0 {
 			priceChange4h = ((currentPrice - price4hAgo) / price4hAgo) * 100
 		}
@@ -131,7 +140,7 @@ func Get(symbol string) (*Data, error) {
 	intradayData := calculateIntradaySeries(klines3m)
 
 	// 计算长期数据
-	longerTermData := calculateLongerTermData(klines4h)
+	longerTermData := calculateLongerTermData(klines4hFull)
 
 	return &Data{
 		Symbol:            symbol,
