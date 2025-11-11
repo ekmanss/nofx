@@ -479,7 +479,7 @@ func (at *AutoTrader) runCycle() error {
 			log.Printf("⏭️  检测到已有持仓，跳过本轮AI决策")
 			record.Success = true
 			record.ErrorMessage = "已有持仓，跳过决策"
-			at.decisionLogger.LogDecision(record)
+			//at.decisionLogger.LogDecision(record)
 			return nil
 		}
 	} else {
