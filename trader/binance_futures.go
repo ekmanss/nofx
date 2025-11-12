@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"nofx/hook"
@@ -59,7 +60,24 @@ type FuturesTrader struct {
 
 	// 缓存有效期（15秒）
 	cacheDuration time.Duration
+
+	// 交易对精度缓存
+	symbolPrecisionCache map[string]symbolPrecisionInfo
+	symbolPrecisionMu    sync.RWMutex
 }
+
+type symbolPrecisionInfo struct {
+	quantityPrecision int
+	quantityStepSize  string
+	quantityFound     bool
+
+	pricePrecision int
+	tickSize       float64
+	tickSizeStr    string
+	priceFound     bool
+}
+
+var errSymbolPrecisionNotFound = errors.New("symbol precision not found")
 
 // NewFuturesTrader 创建合约交易器
 func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
@@ -73,8 +91,9 @@ func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
 	// 同步时间，避免 Timestamp ahead 错误
 	syncBinanceServerTime(client)
 	trader := &FuturesTrader{
-		client:        client,
-		cacheDuration: 15 * time.Second, // 15秒缓存
+		client:               client,
+		cacheDuration:        15 * time.Second, // 15秒缓存
+		symbolPrecisionCache: make(map[string]symbolPrecisionInfo),
 	}
 
 	// 设置双向持仓模式（Hedge Mode）
@@ -733,6 +752,11 @@ func (t *FuturesTrader) SetStopLoss(symbol string, positionSide string, quantity
 		posSide = futures.PositionSideTypeShort
 	}
 
+	priceStr, err := t.FormatPrice(symbol, stopPrice)
+	if err != nil {
+		return err
+	}
+
 	// 格式化数量
 	quantityStr, err := t.FormatQuantity(symbol, quantity)
 	if err != nil {
@@ -744,7 +768,7 @@ func (t *FuturesTrader) SetStopLoss(symbol string, positionSide string, quantity
 		Side(side).
 		PositionSide(posSide).
 		Type(futures.OrderTypeStopMarket).
-		StopPrice(fmt.Sprintf("%.8f", stopPrice)).
+		StopPrice(priceStr).
 		Quantity(quantityStr).
 		WorkingType(futures.WorkingTypeContractPrice).
 		ClosePosition(true).
@@ -754,7 +778,7 @@ func (t *FuturesTrader) SetStopLoss(symbol string, positionSide string, quantity
 		return fmt.Errorf("设置止损失败: %w", err)
 	}
 
-	log.Printf("  止损价设置: %.4f", stopPrice)
+	log.Printf("  止损价设置: %s (原始: %.4f)", priceStr, stopPrice)
 	return nil
 }
 
@@ -771,6 +795,11 @@ func (t *FuturesTrader) SetTakeProfit(symbol string, positionSide string, quanti
 		posSide = futures.PositionSideTypeShort
 	}
 
+	priceStr, err := t.FormatPrice(symbol, takeProfitPrice)
+	if err != nil {
+		return err
+	}
+
 	// 格式化数量
 	quantityStr, err := t.FormatQuantity(symbol, quantity)
 	if err != nil {
@@ -782,7 +811,7 @@ func (t *FuturesTrader) SetTakeProfit(symbol string, positionSide string, quanti
 		Side(side).
 		PositionSide(posSide).
 		Type(futures.OrderTypeTakeProfitMarket).
-		StopPrice(fmt.Sprintf("%.8f", takeProfitPrice)).
+		StopPrice(priceStr).
 		Quantity(quantityStr).
 		WorkingType(futures.WorkingTypeContractPrice).
 		ClosePosition(true).
@@ -792,7 +821,7 @@ func (t *FuturesTrader) SetTakeProfit(symbol string, positionSide string, quanti
 		return fmt.Errorf("设置止盈失败: %w", err)
 	}
 
-	log.Printf("  止盈价设置: %.4f", takeProfitPrice)
+	log.Printf("  止盈价设置: %s (原始: %.4f)", priceStr, takeProfitPrice)
 	return nil
 }
 
@@ -822,29 +851,91 @@ func (t *FuturesTrader) CheckMinNotional(symbol string, quantity float64) error 
 	return nil
 }
 
-// GetSymbolPrecision 获取交易对的数量精度
-func (t *FuturesTrader) GetSymbolPrecision(symbol string) (int, error) {
+func (t *FuturesTrader) getSymbolPrecisionInfo(symbol string) (symbolPrecisionInfo, error) {
+	t.symbolPrecisionMu.RLock()
+	if info, ok := t.symbolPrecisionCache[symbol]; ok {
+		t.symbolPrecisionMu.RUnlock()
+		return info, nil
+	}
+	t.symbolPrecisionMu.RUnlock()
+
 	exchangeInfo, err := t.client.NewExchangeInfoService().Do(context.Background())
 	if err != nil {
-		return 0, fmt.Errorf("获取交易规则失败: %w", err)
+		return symbolPrecisionInfo{}, fmt.Errorf("获取交易规则失败: %w", err)
 	}
 
 	for _, s := range exchangeInfo.Symbols {
-		if s.Symbol == symbol {
-			// 从LOT_SIZE filter获取精度
-			for _, filter := range s.Filters {
-				if filter["filterType"] == "LOT_SIZE" {
-					stepSize := filter["stepSize"].(string)
-					precision := calculatePrecision(stepSize)
-					log.Printf("  %s 数量精度: %d (stepSize: %s)", symbol, precision, stepSize)
-					return precision, nil
+		if s.Symbol != symbol {
+			continue
+		}
+
+		info := symbolPrecisionInfo{}
+		for _, filter := range s.Filters {
+			filterType, _ := filter["filterType"].(string)
+			switch filterType {
+			case "LOT_SIZE":
+				if stepSize, ok := filter["stepSize"].(string); ok {
+					info.quantityStepSize = stepSize
+					info.quantityPrecision = calculatePrecision(stepSize)
+					info.quantityFound = true
+				}
+			case "PRICE_FILTER":
+				if tickSizeStr, ok := filter["tickSize"].(string); ok {
+					info.tickSizeStr = tickSizeStr
+					info.pricePrecision = calculatePrecision(tickSizeStr)
+					if tickSize, err := strconv.ParseFloat(tickSizeStr, 64); err == nil && tickSize > 0 {
+						info.tickSize = tickSize
+						info.priceFound = true
+					}
 				}
 			}
 		}
+
+		t.symbolPrecisionMu.Lock()
+		if t.symbolPrecisionCache == nil {
+			t.symbolPrecisionCache = make(map[string]symbolPrecisionInfo)
+		}
+		t.symbolPrecisionCache[symbol] = info
+		t.symbolPrecisionMu.Unlock()
+
+		return info, nil
 	}
 
-	log.Printf("  ⚠ %s 未找到精度信息，使用默认精度3", symbol)
-	return 3, nil // 默认精度为3
+	return symbolPrecisionInfo{}, errSymbolPrecisionNotFound
+}
+
+// GetSymbolPrecision 获取交易对的数量精度
+func (t *FuturesTrader) GetSymbolPrecision(symbol string) (int, error) {
+	info, err := t.getSymbolPrecisionInfo(symbol)
+	if err != nil {
+		if errors.Is(err, errSymbolPrecisionNotFound) {
+			log.Printf("  ⚠ %s 未找到精度信息，使用默认精度3", symbol)
+			return 3, nil
+		}
+		return 0, err
+	}
+
+	if !info.quantityFound {
+		log.Printf("  ⚠ %s 未找到数量精度，使用默认精度3", symbol)
+		return 3, nil
+	}
+
+	log.Printf("  %s 数量精度: %d (stepSize: %s)", symbol, info.quantityPrecision, info.quantityStepSize)
+	return info.quantityPrecision, nil
+}
+
+// GetSymbolTickSize 获取交易对的tickSize和价格精度
+func (t *FuturesTrader) GetSymbolTickSize(symbol string) (float64, int, error) {
+	info, err := t.getSymbolPrecisionInfo(symbol)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	if !info.priceFound {
+		return 0, 0, fmt.Errorf("未找到 %s 的价格精度信息", symbol)
+	}
+
+	return info.tickSize, info.pricePrecision, nil
 }
 
 // calculatePrecision 从stepSize计算精度
@@ -900,6 +991,19 @@ func (t *FuturesTrader) FormatQuantity(symbol string, quantity float64) (string,
 
 	format := fmt.Sprintf("%%.%df", precision)
 	return fmt.Sprintf(format, quantity), nil
+}
+
+// FormatPrice 将价格格式化为满足tickSize的精度
+func (t *FuturesTrader) FormatPrice(symbol string, price float64) (string, error) {
+	tickSize, precision, err := t.GetSymbolTickSize(symbol)
+	if err != nil {
+		log.Printf("  ⚠ %s 未能获取价格精度，使用默认格式: %v", symbol, err)
+		return fmt.Sprintf("%.4f", price), nil
+	}
+
+	roundedPrice := roundToTickSize(price, tickSize)
+	format := fmt.Sprintf("%%.%df", precision)
+	return fmt.Sprintf(format, roundedPrice), nil
 }
 
 // 辅助函数
