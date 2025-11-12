@@ -141,9 +141,10 @@ type TrailingStopMonitor struct {
 
 const (
 	trailingCheckInterval = 5 * time.Second
-	minProfitThresholdPct = 3.0
-	trailingDrawdownPct   = 0.40
-	trailingRetainPct     = 1.0 - trailingDrawdownPct
+	minProfitThresholdPct = 5.0
+	mediumProfitUpperPct  = 10.0
+	mediumDrawdownPct     = 0.50
+	highDrawdownPct       = 0.35
 	defaultLeverage       = 5
 )
 
@@ -169,6 +170,17 @@ func (p positionSnapshot) profitPct() float64 {
 
 func (p positionSnapshot) key() string {
 	return p.Symbol + "_" + p.Side
+}
+
+// determineTrailingPercents 根据收益率返回允许的回撤比例和保留收益比例
+func determineTrailingPercents(profitPct float64) (drawdownPct, retainPct float64) {
+	if profitPct < minProfitThresholdPct {
+		return 0, 0
+	}
+	if profitPct <= mediumProfitUpperPct {
+		return mediumDrawdownPct, 1.0 - mediumDrawdownPct
+	}
+	return highDrawdownPct, 1.0 - highDrawdownPct
 }
 
 // NewTrailingStopMonitor 创建动态止损监控器
@@ -415,14 +427,22 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, ind
 	log.Printf("      📈 收益率计算: %.2f%% (价格变动: %.2f%% × 杠杆: %dx)",
 		currentProfitPct, priceDeltaPct, pos.Leverage)
 
-	if currentProfitPct <= minProfitThresholdPct {
-		log.Printf("      ⏭️  收益率 %.2f%% ≤ %.0f%%，不满足追踪止损条件，跳过",
+	if currentProfitPct < minProfitThresholdPct {
+		log.Printf("      ⏭️  收益率 %.2f%% < %.0f%%，不满足追踪止损条件，跳过",
 			currentProfitPct, minProfitThresholdPct)
 		return false, true
 	}
 
-	log.Printf("      ✅ 收益率 %.2f%% > %.0f%%，符合追踪止损条件，继续处理...",
+	log.Printf("      ✅ 收益率 %.2f%% ≥ %.0f%%，符合追踪止损条件，继续处理...",
 		currentProfitPct, minProfitThresholdPct)
+
+	drawdownPct, retainPct := determineTrailingPercents(currentProfitPct)
+	if drawdownPct == 0 || retainPct == 0 {
+		log.Printf("      ⚠️  未能确定追踪配置，跳过")
+		return false, true
+	}
+	log.Printf("      ⚙️  追踪配置: 允许回撤 %.0f%% | 保留收益 %.0f%%",
+		drawdownPct*100, retainPct*100)
 
 	posKey := pos.key()
 	openTime := m.trader.positionFirstSeenTime[posKey]
@@ -438,7 +458,7 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, ind
 	peakPrice := m.calculatePeakPrice(pos.Symbol, pos.Side, pos.EntryPrice, pos.MarkPrice, openTime)
 
 	log.Printf("      💡 计算追踪止损价格...")
-	newStopLoss := m.calculateTrailingStopPrice(pos.Side, pos.EntryPrice, peakPrice)
+	newStopLoss := m.calculateTrailingStopPrice(pos.Side, pos.EntryPrice, peakPrice, retainPct, drawdownPct)
 
 	log.Printf("      🔍 验证止损价格有效性...")
 	isValid, triggerClose := m.isStopLossValid(pos.Side, pos.EntryPrice, newStopLoss, pos.MarkPrice)
@@ -466,7 +486,7 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, ind
 	log.Printf("         新止损: %.4f", newStopLoss)
 
 	log.Printf("      🔧 正在设置止损单...")
-	if err := m.updateStopLoss(pos.Symbol, pos.Side, pos.Quantity, newStopLoss, pos.MarkPrice); err != nil {
+	if err := m.updateStopLoss(pos.Symbol, pos.Side, pos.Quantity, newStopLoss, pos.MarkPrice, retainPct, drawdownPct); err != nil {
 		log.Printf("      ❌ 设置止损单失败: %v", err)
 		return false, false
 	}
@@ -630,31 +650,31 @@ func (m *TrailingStopMonitor) calculatePeakPrice(symbol, side string, entryPrice
 	return peakPrice
 }
 
-// calculateTrailingStopPrice 计算追踪止损价格（允许40%收益回撤）
-func (m *TrailingStopMonitor) calculateTrailingStopPrice(side string, entryPrice, peakPrice float64) float64 {
+// calculateTrailingStopPrice 计算追踪止损价格（根据收益区间动态调整回撤）
+func (m *TrailingStopMonitor) calculateTrailingStopPrice(side string, entryPrice, peakPrice, retainPct, drawdownPct float64) float64 {
 	var stopLoss float64
 	if side == "long" {
 		// 多单：
 		// 收益空间 = 峰值价 - 入场价
-		// 止损价 = 入场价 + 收益空间 × 60%
+		// 止损价 = 入场价 + 收益空间 × 保留收益比例
 		profitSpace := peakPrice - entryPrice
-		stopLoss = entryPrice + profitSpace*trailingRetainPct
+		stopLoss = entryPrice + profitSpace*retainPct
 
 		log.Printf("         [止损计算-多单] 收益空间: %.4f (峰值 %.4f - 入场 %.4f)",
 			profitSpace, peakPrice, entryPrice)
 		log.Printf("         [止损计算-多单] 允许回撤: %.0f%% | 保留收益: %.2f%% | 止损价: %.4f + %.4f × %.0f%% = %.4f",
-			trailingDrawdownPct*100, trailingRetainPct*100, entryPrice, profitSpace, trailingRetainPct*100, stopLoss)
+			drawdownPct*100, retainPct*100, entryPrice, profitSpace, retainPct*100, stopLoss)
 	} else {
 		// 空单：
 		// 收益空间 = 入场价 - 峰值价
-		// 止损价 = 入场价 - 收益空间 × 60%
+		// 止损价 = 入场价 - 收益空间 × 保留收益比例
 		profitSpace := entryPrice - peakPrice
-		stopLoss = entryPrice - profitSpace*trailingRetainPct
+		stopLoss = entryPrice - profitSpace*retainPct
 
 		log.Printf("         [止损计算-空单] 收益空间: %.4f (入场 %.4f - 峰值 %.4f)",
 			profitSpace, entryPrice, peakPrice)
 		log.Printf("         [止损计算-空单] 允许回撤: %.0f%% | 保留收益: %.2f%% | 止损价: %.4f - %.4f × %.0f%% = %.4f",
-			trailingDrawdownPct*100, trailingRetainPct*100, entryPrice, profitSpace, trailingRetainPct*100, stopLoss)
+			drawdownPct*100, retainPct*100, entryPrice, profitSpace, retainPct*100, stopLoss)
 	}
 
 	return stopLoss
@@ -706,7 +726,7 @@ func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLo
 }
 
 // updateStopLoss 更新止损价（使用统一的止损更新逻辑）
-func (m *TrailingStopMonitor) updateStopLoss(symbol, side string, quantity, newStopLoss, currentPrice float64) error {
+func (m *TrailingStopMonitor) updateStopLoss(symbol, side string, quantity, newStopLoss, currentPrice, retainPct, drawdownPct float64) error {
 	posKey := symbol + "_" + side
 
 	// 🚨 优先检查：止损价是否已被触发（价格跌破/突破止损线）
@@ -784,7 +804,7 @@ func (m *TrailingStopMonitor) updateStopLoss(symbol, side string, quantity, newS
 		Symbol:      symbol,
 		Action:      "update_stop_loss",
 		NewStopLoss: newStopLoss,
-		Reasoning:   fmt.Sprintf("追踪止损自动调整: 保留60%%收益空间，止损价 %.4f", newStopLoss),
+		Reasoning:   fmt.Sprintf("追踪止损自动调整: 允许%.0f%%回撤（保留%.0f%%收益），止损价 %.4f", drawdownPct*100, retainPct*100, newStopLoss),
 	}
 
 	// 构建 DecisionAction 记录（用于日志记录）
