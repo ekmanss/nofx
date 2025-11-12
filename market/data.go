@@ -563,11 +563,11 @@ func Format(data *Data) string {
 		sb.WriteString("\n")
 	}
 
-	if len(data.Klines1w) > 0 {
-		sb.WriteString(fmt.Sprintf("Complete 1-week Klines (Total: %d):\n", len(data.Klines1w)))
-		sb.WriteString(formatKlines(data.Klines1w))
-		sb.WriteString("\n")
-	}
+	//if len(data.Klines1w) > 0 {
+	//	sb.WriteString(fmt.Sprintf("Complete 1-week Klines (Total: %d):\n", len(data.Klines1w)))
+	//	sb.WriteString(formatKlines(data.Klines1w))
+	//	sb.WriteString("\n")
+	//}
 
 	return sb.String()
 }
