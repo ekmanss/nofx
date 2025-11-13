@@ -13,13 +13,12 @@ import (
 
 // TrailingStopMonitor 动态追踪止损监控器
 type TrailingStopMonitor struct {
-	trader             *AutoTrader
-	riskStates         map[string]*riskStageInfo
-	lastStopLossPrices map[string]float64 // symbol_side -> 上次设置的止损价（避免重复调用API）
-	mu                 sync.RWMutex
-	stopCh             chan struct{} // 用于停止监控goroutine
-	wg                 sync.WaitGroup
-	isRunning          bool
+	trader     *AutoTrader
+	riskStates map[string]*riskStageInfo
+	mu         sync.RWMutex
+	stopCh     chan struct{} // 用于停止监控goroutine
+	wg         sync.WaitGroup
+	isRunning  bool
 }
 
 const (
@@ -40,11 +39,10 @@ type riskStageInfo struct {
 // NewTrailingStopMonitor 创建动态止损监控器
 func NewTrailingStopMonitor(trader *AutoTrader) *TrailingStopMonitor {
 	return &TrailingStopMonitor{
-		trader:             trader,
-		riskStates:         make(map[string]*riskStageInfo),
-		lastStopLossPrices: make(map[string]float64),
-		stopCh:             make(chan struct{}),
-		isRunning:          false,
+		trader:     trader,
+		riskStates: make(map[string]*riskStageInfo),
+		stopCh:     make(chan struct{}),
+		isRunning:  false,
 	}
 }
 
@@ -68,7 +66,6 @@ func (m *TrailingStopMonitor) RegisterInitialStop(symbol, side string, stop floa
 
 	m.mu.Lock()
 	m.riskStates[posKey] = &riskStageInfo{InitialStop: stop, Stage: rStageInitial}
-	delete(m.lastStopLossPrices, posKey) // 避免复用旧止损
 	m.mu.Unlock()
 
 	log.Printf("🆕 [追踪止损] 记录初始止损: %s %s → %.4f (阶段重置)", symbol, strings.ToUpper(side), stop)
@@ -210,7 +207,7 @@ func (m *TrailingStopMonitor) cleanupInactivePositions(activeKeys map[string]str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if len(m.riskStates) == 0 && len(m.lastStopLossPrices) == 0 {
+	if len(m.riskStates) == 0 {
 		return
 	}
 
@@ -220,14 +217,6 @@ func (m *TrailingStopMonitor) cleanupInactivePositions(activeKeys map[string]str
 		}
 		_, ok := activeKeys[key]
 		return ok
-	}
-
-	for key := range m.lastStopLossPrices {
-		if keep(key) {
-			continue
-		}
-		delete(m.lastStopLossPrices, key)
-		log.Printf("🧹 [追踪止损] 移除失效止损缓存: %s", key)
 	}
 
 	for key := range m.riskStates {
@@ -422,8 +411,6 @@ func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLo
 
 // updateStopLoss 更新止损价（使用统一的止损更新逻辑）
 func (m *TrailingStopMonitor) updateStopLoss(symbol, side string, quantity, newStopLoss, currentPrice float64, reason string) error {
-	posKey := symbol + "_" + side
-
 	// 🚨 优先检查：止损价是否已被触发（价格跌破/突破止损线）
 	stopLossTriggered := false
 	if side == "long" {
@@ -451,43 +438,38 @@ func (m *TrailingStopMonitor) updateStopLoss(symbol, side string, quantity, newS
 		return nil
 	}
 
-	// 检查上次设置的止损价，避免重复调用API
-	m.mu.RLock()
-	lastStopLoss, exists := m.lastStopLossPrices[posKey]
-	m.mu.RUnlock()
-
-	if exists {
-		log.Printf("         [追踪止损] 检测到上次止损价: %.4f", lastStopLoss)
-
-		// 判断新止损价是否更优
-		shouldUpdate := false
+	// 读取交易所当前止损价，避免重复提交
+	currentStopLoss, hasExisting, err := m.getCurrentStopLoss(symbol, side)
+	if err != nil {
+		log.Printf("         [追踪止损] ⚠️ 获取实时止损信息失败: %v（将继续尝试更新）", err)
+	} else if hasExisting {
+		log.Printf("         [追踪止损] 交易所当前止损价: %.4f", currentStopLoss)
+		improved := false
 		if side == "long" {
-			// 多单：新止损价必须高于上次止损价（止损上移）
-			if newStopLoss > lastStopLoss {
+			if newStopLoss > currentStopLoss {
 				log.Printf("         [追踪止损] 多单止损上移: %.4f -> %.4f (提升 %.4f)",
-					lastStopLoss, newStopLoss, newStopLoss-lastStopLoss)
-				shouldUpdate = true
+					currentStopLoss, newStopLoss, newStopLoss-currentStopLoss)
+				improved = true
 			} else {
-				log.Printf("         [追踪止损] ⏭️  多单新止损 %.4f ≤ 上次 %.4f，无需更新（避免重复调用API）",
-					newStopLoss, lastStopLoss)
+				log.Printf("         [追踪止损] ⏭️  多单新止损 %.4f ≤ 当前委托 %.4f，无需更新",
+					newStopLoss, currentStopLoss)
 			}
 		} else {
-			// 空单：新止损价必须低于上次止损价（止损下移）
-			if newStopLoss < lastStopLoss {
+			if newStopLoss < currentStopLoss {
 				log.Printf("         [追踪止损] 空单止损下移: %.4f -> %.4f (降低 %.4f)",
-					lastStopLoss, newStopLoss, lastStopLoss-newStopLoss)
-				shouldUpdate = true
+					currentStopLoss, newStopLoss, currentStopLoss-newStopLoss)
+				improved = true
 			} else {
-				log.Printf("         [追踪止损] ⏭️  空单新止损 %.4f ≥ 上次 %.4f，无需更新（避免重复调用API）",
-					newStopLoss, lastStopLoss)
+				log.Printf("         [追踪止损] ⏭️  空单新止损 %.4f ≥ 当前委托 %.4f，无需更新",
+					newStopLoss, currentStopLoss)
 			}
 		}
 
-		if !shouldUpdate {
+		if !improved {
 			return nil
 		}
 	} else {
-		log.Printf("         [追踪止损] 首次设置止损价: %.4f", newStopLoss)
+		log.Printf("         [追踪止损] 交易所暂无止损单，视为首次设置 (%.4f)", newStopLoss)
 	}
 
 	log.Printf("         [追踪止损] 调用统一止损更新接口...")
@@ -524,19 +506,74 @@ func (m *TrailingStopMonitor) updateStopLoss(symbol, side string, quantity, newS
 	// 4. 取消旧止损单
 	// 5. 设置新止损单
 	// 6. 完整的决策日志记录
-	err := m.trader.executeUpdateStopLossWithRecord(d, actionRecord)
+	err = m.trader.executeUpdateStopLossWithRecord(d, actionRecord)
 	if err != nil {
 		log.Printf("         [追踪止损] ❌ 调用统一止损更新接口失败: %v", err)
 		return fmt.Errorf("追踪止损更新失败: %w", err)
 	}
 
-	// 成功设置后，缓存新的止损价
-	m.mu.Lock()
-	m.lastStopLossPrices[posKey] = newStopLoss
-	m.mu.Unlock()
-
-	log.Printf("         [追踪止损] ✅ 通过统一接口成功设置止损，已缓存止损价 %.4f", newStopLoss)
+	log.Printf("         [追踪止损] ✅ 通过统一接口成功设置止损 → %.4f", newStopLoss)
 	return nil
+}
+
+// getCurrentStopLoss 查询交易所当前的止损单价格（按 symbol + side）
+func (m *TrailingStopMonitor) getCurrentStopLoss(symbol, side string) (float64, bool, error) {
+	if m == nil || m.trader == nil || m.trader.trader == nil {
+		return 0, false, fmt.Errorf("trader 未初始化")
+	}
+
+	orders, err := m.trader.trader.GetOpenOrders(symbol)
+	if err != nil {
+		return 0, false, err
+	}
+
+	targetSide := strings.ToUpper(side)
+	var (
+		bestPrice float64
+		found     bool
+	)
+
+	for _, raw := range orders {
+		orderType := strings.ToUpper(fmt.Sprintf("%v", raw["type"]))
+		if orderType != "STOP_MARKET" && orderType != "STOP" {
+			continue
+		}
+
+		if closePosition, _ := raw["closePosition"].(bool); !closePosition {
+			continue
+		}
+
+		positionSide := strings.ToUpper(fmt.Sprintf("%v", raw["positionSide"]))
+		if positionSide == "" || positionSide == "BOTH" {
+			positionSide = strings.ToUpper(fmt.Sprintf("%v", raw["side"]))
+		}
+		if positionSide != targetSide {
+			continue
+		}
+
+		stopPrice, err := floatFromAny(raw["stopPrice"])
+		if err != nil || stopPrice <= 0 {
+			continue
+		}
+
+		if !found {
+			bestPrice = stopPrice
+			found = true
+			continue
+		}
+
+		if targetSide == "LONG" {
+			if stopPrice > bestPrice {
+				bestPrice = stopPrice
+			}
+		} else {
+			if stopPrice < bestPrice {
+				bestPrice = stopPrice
+			}
+		}
+	}
+
+	return bestPrice, found, nil
 }
 
 // executeMarketClose 执行紧急市价平仓（止损触发时使用）
@@ -600,14 +637,6 @@ func (m *TrailingStopMonitor) ClearPosition(symbol, side string) {
 	posKey := symbol + "_" + side
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	// 清除止损价缓存
-	if stopLoss, exists := m.lastStopLossPrices[posKey]; exists {
-		delete(m.lastStopLossPrices, posKey)
-		log.Printf("🧹 [追踪止损] 清除 %s 止损价缓存 (止损价: %.4f)", posKey, stopLoss)
-	} else {
-		log.Printf("🧹 [追踪止损] %s 止损价缓存不存在", posKey)
-	}
 
 	if risk, exists := m.riskStates[posKey]; exists {
 		delete(m.riskStates, posKey)

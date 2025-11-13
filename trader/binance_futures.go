@@ -92,7 +92,7 @@ func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
 	syncBinanceServerTime(client)
 	trader := &FuturesTrader{
 		client:               client,
-		cacheDuration:        15 * time.Second, // 15秒缓存
+		cacheDuration:        2 * time.Second, // 2秒缓存
 		symbolPrecisionCache: make(map[string]symbolPrecisionInfo),
 	}
 
@@ -230,6 +230,59 @@ func (t *FuturesTrader) GetPositions() ([]map[string]interface{}, error) {
 	t.cachedPositions = result
 	t.positionsCacheTime = time.Now()
 	t.positionsCacheMutex.Unlock()
+
+	return result, nil
+}
+
+// GetOpenOrders 获取当前委托（symbol 为空则返回所有交易对的委托）
+func (t *FuturesTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	service := t.client.NewListOpenOrdersService()
+	if trimmed := strings.TrimSpace(symbol); trimmed != "" {
+		service.Symbol(trimmed)
+	}
+
+	orders, err := service.Do(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("获取当前委托失败: %w", err)
+	}
+
+	result := make([]map[string]interface{}, 0, len(orders))
+	for _, order := range orders {
+		if order == nil {
+			continue
+		}
+
+		orderMap := map[string]interface{}{
+			"orderId":                 order.OrderID,
+			"symbol":                  order.Symbol,
+			"clientOrderId":           order.ClientOrderID,
+			"type":                    order.Type,
+			"side":                    order.Side,
+			"positionSide":            order.PositionSide,
+			"status":                  order.Status,
+			"timeInForce":             order.TimeInForce,
+			"reduceOnly":              order.ReduceOnly,
+			"closePosition":           order.ClosePosition,
+			"workingType":             order.WorkingType,
+			"priceProtect":            order.PriceProtect,
+			"origType":                order.OrigType,
+			"priceMatch":              order.PriceMatch,
+			"selfTradePreventionMode": order.SelfTradePreventionMode,
+			"goodTillDate":            order.GoodTillDate,
+			"updateTime":              order.UpdateTime,
+		}
+
+		orderMap["price"], _ = strconv.ParseFloat(order.Price, 64)
+		orderMap["origQty"], _ = strconv.ParseFloat(order.OrigQuantity, 64)
+		orderMap["executedQty"], _ = strconv.ParseFloat(order.ExecutedQuantity, 64)
+		orderMap["cumQuote"], _ = strconv.ParseFloat(order.CumQuote, 64)
+		orderMap["stopPrice"], _ = strconv.ParseFloat(order.StopPrice, 64)
+		orderMap["avgPrice"], _ = strconv.ParseFloat(order.AvgPrice, 64)
+		orderMap["activatePrice"], _ = strconv.ParseFloat(order.ActivatePrice, 64)
+		orderMap["priceRate"], _ = strconv.ParseFloat(order.PriceRate, 64)
+
+		result = append(result, orderMap)
+	}
 
 	return result, nil
 }

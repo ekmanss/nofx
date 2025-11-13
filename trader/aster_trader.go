@@ -1230,3 +1230,8 @@ func (t *AsterTrader) FormatQuantity(symbol string, quantity float64) (string, e
 	}
 	return fmt.Sprintf("%v", formatted), nil
 }
+
+// GetOpenOrders 暂未实现，返回占位错误
+func (t *AsterTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	return nil, fmt.Errorf("aster trader does not support GetOpenOrders")
+}
