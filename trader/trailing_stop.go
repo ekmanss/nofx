@@ -6,7 +6,6 @@ import (
 	"math"
 	"nofx/decision"
 	"nofx/logger"
-	"nofx/market"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,25 +126,34 @@ func (m *SharedTrailingStopMonitor) ClearPosition(symbol, side string) {
 	m.entry.monitor.ClearPosition(symbol, side)
 }
 
+// RegisterInitialStop 将开仓时的初始止损透传给真实监控器
+func (m *SharedTrailingStopMonitor) RegisterInitialStop(symbol, side string, stop float64) {
+	if m == nil || m.entry == nil {
+		return
+	}
+	m.entry.monitor.RegisterInitialStop(symbol, side, stop)
+}
+
 // TrailingStopMonitor 动态追踪止损监控器
 // 功能：当持仓收益>2%时，自动设置动态止损，从最高价回撤40%时触发
 type TrailingStopMonitor struct {
-	trader               *AutoTrader
-	historicalPeakPrices map[string]float64 // symbol_side -> 历史最高/最低价格
-	lastStopLossPrices   map[string]float64 // symbol_side -> 上次设置的止损价（避免重复调用API）
-	mu                   sync.RWMutex
-	stopCh               chan struct{} // 用于停止监控goroutine
-	wg                   sync.WaitGroup
-	isRunning            bool
+	trader             *AutoTrader
+	riskStates         map[string]*riskStageInfo
+	lastStopLossPrices map[string]float64 // symbol_side -> 上次设置的止损价（避免重复调用API）
+	mu                 sync.RWMutex
+	stopCh             chan struct{} // 用于停止监控goroutine
+	wg                 sync.WaitGroup
+	isRunning          bool
 }
 
 const (
 	trailingCheckInterval = 5 * time.Second
-	minProfitThresholdPct = 5.0
-	mediumProfitUpperPct  = 10.0
-	mediumDrawdownPct     = 0.50
-	highDrawdownPct       = 0.35
 	defaultLeverage       = 5
+
+	rStageInitial   = iota // 尚未达到 +1R
+	rStageBreakeven        // +1R，止损移至开仓价
+	rStageLockOneR         // +2R，止损锁定 +1R
+	rStageATR              // +3R，待接入 ATR Trailing
 )
 
 type positionSnapshot struct {
@@ -157,40 +165,23 @@ type positionSnapshot struct {
 	Leverage   int
 }
 
-func (p positionSnapshot) profitPct() float64 {
-	if p.EntryPrice == 0 {
-		return 0
-	}
-	priceMove := (p.MarkPrice - p.EntryPrice) / p.EntryPrice
-	if p.Side == "short" {
-		priceMove = -priceMove
-	}
-	return priceMove * float64(p.Leverage) * 100
+type riskStageInfo struct {
+	InitialStop float64
+	Stage       int
 }
 
 func (p positionSnapshot) key() string {
 	return p.Symbol + "_" + p.Side
 }
 
-// determineTrailingPercents 根据收益率返回允许的回撤比例和保留收益比例
-func determineTrailingPercents(profitPct float64) (drawdownPct, retainPct float64) {
-	if profitPct < minProfitThresholdPct {
-		return 0, 0
-	}
-	if profitPct <= mediumProfitUpperPct {
-		return mediumDrawdownPct, 1.0 - mediumDrawdownPct
-	}
-	return highDrawdownPct, 1.0 - highDrawdownPct
-}
-
 // NewTrailingStopMonitor 创建动态止损监控器
 func NewTrailingStopMonitor(trader *AutoTrader) *TrailingStopMonitor {
 	return &TrailingStopMonitor{
-		trader:               trader,
-		historicalPeakPrices: make(map[string]float64),
-		lastStopLossPrices:   make(map[string]float64),
-		stopCh:               make(chan struct{}),
-		isRunning:            false,
+		trader:             trader,
+		riskStates:         make(map[string]*riskStageInfo),
+		lastStopLossPrices: make(map[string]float64),
+		stopCh:             make(chan struct{}),
+		isRunning:          false,
 	}
 }
 
@@ -202,6 +193,43 @@ func (m *TrailingStopMonitor) SetOwner(trader *AutoTrader) {
 	m.mu.Lock()
 	m.trader = trader
 	m.mu.Unlock()
+}
+
+// RegisterInitialStop 记录某个持仓的初始止损，用于R-based分段管理
+func (m *TrailingStopMonitor) RegisterInitialStop(symbol, side string, stop float64) {
+	if m == nil || symbol == "" || stop <= 0 {
+		return
+	}
+
+	posKey := symbol + "_" + strings.ToLower(side)
+
+	m.mu.Lock()
+	m.riskStates[posKey] = &riskStageInfo{InitialStop: stop, Stage: rStageInitial}
+	delete(m.lastStopLossPrices, posKey) // 避免复用旧止损
+	m.mu.Unlock()
+
+	log.Printf("🆕 [追踪止损] 记录初始止损: %s %s → %.4f (阶段重置)", symbol, strings.ToUpper(side), stop)
+}
+
+func (m *TrailingStopMonitor) getRiskState(posKey string) (*riskStageInfo, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	info, ok := m.riskStates[posKey]
+	if !ok {
+		return nil, false
+	}
+	copied := *info
+	return &copied, true
+}
+
+func (m *TrailingStopMonitor) setRiskStage(posKey string, stage int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if info, ok := m.riskStates[posKey]; ok {
+		info.Stage = stage
+	}
 }
 
 func newPositionSnapshot(raw map[string]interface{}) (*positionSnapshot, error) {
@@ -417,7 +445,7 @@ func (m *TrailingStopMonitor) cleanupInactivePositions(activeKeys map[string]str
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if len(m.historicalPeakPrices) == 0 && len(m.lastStopLossPrices) == 0 {
+	if len(m.riskStates) == 0 && len(m.lastStopLossPrices) == 0 {
 		return
 	}
 
@@ -429,20 +457,20 @@ func (m *TrailingStopMonitor) cleanupInactivePositions(activeKeys map[string]str
 		return ok
 	}
 
-	for key := range m.historicalPeakPrices {
-		if keep(key) {
-			continue
-		}
-		delete(m.historicalPeakPrices, key)
-		log.Printf("🧹 [追踪止损] 移除失效峰值缓存: %s", key)
-	}
-
 	for key := range m.lastStopLossPrices {
 		if keep(key) {
 			continue
 		}
 		delete(m.lastStopLossPrices, key)
 		log.Printf("🧹 [追踪止损] 移除失效止损缓存: %s", key)
+	}
+
+	for key := range m.riskStates {
+		if keep(key) {
+			continue
+		}
+		delete(m.riskStates, key)
+		log.Printf("🧹 [追踪止损] 移除失效风险分段缓存: %s", key)
 	}
 }
 
@@ -461,53 +489,92 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, ind
 		return false, true
 	}
 
-	currentProfitPct := pos.profitPct()
-	priceDeltaPct := currentProfitPct / float64(pos.Leverage)
-	log.Printf("      📈 收益率计算: %.2f%% (价格变动: %.2f%% × 杠杆: %dx)",
-		currentProfitPct, priceDeltaPct, pos.Leverage)
-
-	if currentProfitPct < minProfitThresholdPct {
-		log.Printf("      ⏭️  收益率 %.2f%% < %.0f%%，不满足追踪止损条件，跳过",
-			currentProfitPct, minProfitThresholdPct)
-		return false, true
-	}
-
-	log.Printf("      ✅ 收益率 %.2f%% ≥ %.0f%%，符合追踪止损条件，继续处理...",
-		currentProfitPct, minProfitThresholdPct)
-
-	drawdownPct, retainPct := determineTrailingPercents(currentProfitPct)
-	if drawdownPct == 0 || retainPct == 0 {
-		log.Printf("      ⚠️  未能确定追踪配置，跳过")
-		return false, true
-	}
-	log.Printf("      ⚙️  追踪配置: 允许回撤 %.0f%% | 保留收益 %.0f%%",
-		drawdownPct*100, retainPct*100)
-
 	posKey := pos.key()
-	openTime := m.trader.getPositionFirstSeenTime(posKey)
-	if openTime == 0 {
-		openTime = time.Now().UnixMilli()
-		log.Printf("      ⚠️  未找到开仓时间记录，使用当前时间")
-	} else {
-		duration := time.Since(time.Unix(openTime/1000, 0))
-		log.Printf("      ⏱️  持仓时长: %v", duration.Round(time.Second))
+	riskInfo, ok := m.getRiskState(posKey)
+	if !ok {
+		log.Printf("      ⏭️  未记录初始止损，无法计算R倍数，跳过")
+		return false, true
 	}
 
-	log.Printf("      🔍 开始计算历史峰值价格（使用1分钟K线）...")
-	peakPrice := m.calculatePeakPrice(pos.Symbol, pos.Side, pos.EntryPrice, pos.MarkPrice, openTime)
+	riskDistance := math.Abs(pos.EntryPrice - riskInfo.InitialStop)
+	if riskDistance == 0 {
+		log.Printf("      ⏭️  入场价 %.4f 与初始止损 %.4f 重合，无法计算1R，跳过", pos.EntryPrice, riskInfo.InitialStop)
+		return false, true
+	}
 
-	log.Printf("      💡 计算追踪止损价格...")
-	newStopLoss := m.calculateTrailingStopPrice(pos.Side, pos.EntryPrice, peakPrice, retainPct, drawdownPct)
+	var currentR float64
+	if pos.Side == "long" {
+		currentR = (pos.MarkPrice - pos.EntryPrice) / riskDistance
+	} else {
+		currentR = (pos.EntryPrice - pos.MarkPrice) / riskDistance
+	}
+
+	log.Printf("      🧮 初始止损: %.4f | 1R距离: %.4f | 当前: %.2fR | 阶段: %s",
+		riskInfo.InitialStop, riskDistance, currentR, formatStageName(riskInfo.Stage))
+
+	nextStage := riskInfo.Stage
+	var (
+		shouldUpdate bool
+		newStopLoss  float64
+		reason       string
+	)
+
+	switch riskInfo.Stage {
+	case rStageInitial:
+		if currentR >= 1.0 {
+			shouldUpdate = true
+			nextStage = rStageBreakeven
+			newStopLoss = pos.EntryPrice
+			reason = fmt.Sprintf("R-based 分段: +1R 达成，止损移至开仓价 %.4f", newStopLoss)
+			log.Printf("      ✅ 达成 +1R，准备将止损移动到开仓价")
+		} else {
+			log.Printf("      ⏳ 当前 %.2fR，等待达到 +1R 再移动止损", currentR)
+			return false, true
+		}
+	case rStageBreakeven:
+		if currentR >= 2.0 {
+			shouldUpdate = true
+			nextStage = rStageLockOneR
+			if pos.Side == "long" {
+				newStopLoss = pos.EntryPrice + riskDistance
+			} else {
+				newStopLoss = pos.EntryPrice - riskDistance
+			}
+			reason = fmt.Sprintf("R-based 分段: +2R 达成，止损锁定 +1R (%.4f)", newStopLoss)
+			log.Printf("      ✅ 达成 +2R，止损将移动到 +1R 位置")
+		} else {
+			log.Printf("      ⏳ 当前 %.2fR，等待达到 +2R", currentR)
+			return false, true
+		}
+	case rStageLockOneR:
+		if currentR >= 3.0 {
+			log.Printf("      🎯 +3R 已达成，后续需启用 ATR Trailing（TODO）")
+			m.setRiskStage(posKey, rStageATR)
+			return false, false
+		}
+		log.Printf("      ⏳ 当前 %.2fR，等待达到 +3R 以启动 ATR Trailing", currentR)
+		return false, true
+	case rStageATR:
+		log.Printf("      🕒 ATR Trailing 阶段 TODO：尚未实现自动跟踪")
+		return false, true
+	default:
+		log.Printf("      ⚠️ 未知分段状态 %d，跳过", riskInfo.Stage)
+		return false, true
+	}
+
+	if !shouldUpdate {
+		return false, true
+	}
 
 	log.Printf("      🔍 验证止损价格有效性...")
 	isValid, triggerClose := m.isStopLossValid(pos.Side, pos.EntryPrice, newStopLoss, pos.MarkPrice)
 	if triggerClose {
-		log.Printf("      🚨 当前价格已触发追踪止损，执行紧急平仓流程")
+		log.Printf("      🚨 当前价格已触及新止损，执行紧急平仓")
 		if err := m.executeMarketClose(pos.Symbol, pos.Side, pos.MarkPrice); err != nil {
 			log.Printf("      ❌ 紧急平仓失败: %v", err)
 			return false, false
 		}
-		log.Printf("      ✅ 紧急平仓完成，结束此持仓检查")
+		log.Printf("      ✅ 紧急平仓完成")
 		return true, false
 	}
 
@@ -516,207 +583,15 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, ind
 		return false, true
 	}
 
-	log.Printf("      ✅ 止损价格验证通过")
-	log.Printf("\n      🎯 [追踪止损决策] %s %s", pos.Symbol, sideLabel)
-	log.Printf("         收益率: %.2f%%", currentProfitPct)
-	log.Printf("         入场价: %.4f", pos.EntryPrice)
-	log.Printf("         峰值价: %.4f", peakPrice)
-	log.Printf("         当前价: %.4f", pos.MarkPrice)
-	log.Printf("         新止损: %.4f", newStopLoss)
-
-	log.Printf("      🔧 正在设置止损单...")
-	if err := m.updateStopLoss(pos.Symbol, pos.Side, pos.Quantity, newStopLoss, pos.MarkPrice, retainPct, drawdownPct); err != nil {
+	log.Printf("      ✅ 止损价格验证通过，准备更新止损 → %.4f", newStopLoss)
+	if err := m.updateStopLoss(pos.Symbol, pos.Side, pos.Quantity, newStopLoss, pos.MarkPrice, reason); err != nil {
 		log.Printf("      ❌ 设置止损单失败: %v", err)
 		return false, false
 	}
 
-	log.Printf("      ✅ 成功设置动态止损价 %.4f", newStopLoss)
+	m.setRiskStage(posKey, nextStage)
+	log.Printf("      ✅ 成功设置分段止损，阶段切换为 %s", formatStageName(nextStage))
 	return true, false
-}
-
-// calculatePeakPrice 计算历史最高价/最低价（使用1分钟K线，从开仓时间开始）
-func (m *TrailingStopMonitor) calculatePeakPrice(symbol, side string, entryPrice, currentPrice float64,
-	openTime int64) float64 {
-
-	posKey := symbol + "_" + side
-	var peakPrice float64
-
-	if side == "long" {
-		// 多单：找最高价
-		peakPrice = entryPrice
-		log.Printf("         [峰值追踪-多单] 初始峰值 = 入场价 %.4f", peakPrice)
-
-		// 1. 检查当前价格
-		if currentPrice > peakPrice {
-			log.Printf("         [峰值追踪-多单] 当前价 %.4f > 峰值 %.4f，更新峰值", currentPrice, peakPrice)
-			peakPrice = currentPrice
-		} else {
-			log.Printf("         [峰值追踪-多单] 当前价 %.4f ≤ 峰值 %.4f，保持峰值", currentPrice, peakPrice)
-		}
-
-		// 2. 从市场监控器获取1分钟K线数据
-		klines1m, err := market.WSMonitorCli.GetCurrentKlines(symbol, "1m")
-		if err != nil {
-			log.Printf("         [峰值追踪-多单] ⚠️ 获取1分钟K线失败: %v，使用当前价格", err)
-		} else {
-			// 过滤开仓时间之后的K线
-			var filteredKlines []market.Kline
-			for _, kline := range klines1m {
-				if kline.OpenTime >= openTime {
-					filteredKlines = append(filteredKlines, kline)
-				}
-			}
-
-			if len(filteredKlines) > 0 {
-				log.Printf("         [峰值追踪-多单] 找到 %d 根开仓时间后的1分钟K线（总共 %d 根）",
-					len(filteredKlines), len(klines1m))
-
-				maxKlinePrice := peakPrice
-				for _, kline := range filteredKlines {
-					if kline.High > maxKlinePrice {
-						maxKlinePrice = kline.High
-					}
-				}
-
-				if maxKlinePrice > peakPrice {
-					log.Printf("         [峰值追踪-多单] K线最高价 %.4f > 峰值 %.4f（检查了%d根K线），更新峰值",
-						maxKlinePrice, peakPrice, len(filteredKlines))
-					peakPrice = maxKlinePrice
-				} else {
-					log.Printf("         [峰值追踪-多单] K线最高价 %.4f ≤ 峰值 %.4f（检查了%d根K线），保持峰值",
-						maxKlinePrice, peakPrice, len(filteredKlines))
-				}
-			} else {
-				log.Printf("         [峰值追踪-多单] ⚠️ 未找到开仓时间后的K线，使用当前价格")
-			}
-		}
-
-		// 3. 检查缓存中的历史最高价
-		m.mu.RLock()
-		cachedPeak, exists := m.historicalPeakPrices[posKey]
-		m.mu.RUnlock()
-		if exists {
-			if cachedPeak > peakPrice {
-				log.Printf("         [峰值追踪-多单] 缓存峰值 %.4f > 当前峰值 %.4f，使用缓存值", cachedPeak, peakPrice)
-				peakPrice = cachedPeak
-			} else {
-				log.Printf("         [峰值追踪-多单] 缓存峰值 %.4f ≤ 当前峰值 %.4f，更新缓存", cachedPeak, peakPrice)
-			}
-		} else {
-			log.Printf("         [峰值追踪-多单] 首次记录峰值 %.4f", peakPrice)
-		}
-
-		// 4. 更新缓存
-		m.mu.Lock()
-		m.historicalPeakPrices[posKey] = peakPrice
-		m.mu.Unlock()
-
-		log.Printf("         [峰值追踪-多单] ✅ 最终峰值价格: %.4f", peakPrice)
-
-	} else {
-		// 空单：找最低价（对空单来说最低价是最佳收益点）
-		peakPrice = entryPrice
-		log.Printf("         [峰值追踪-空单] 初始峰值 = 入场价 %.4f", peakPrice)
-
-		// 1. 检查当前价格
-		if currentPrice < peakPrice {
-			log.Printf("         [峰值追踪-空单] 当前价 %.4f < 峰值 %.4f，更新峰值", currentPrice, peakPrice)
-			peakPrice = currentPrice
-		} else {
-			log.Printf("         [峰值追踪-空单] 当前价 %.4f ≥ 峰值 %.4f，保持峰值", currentPrice, peakPrice)
-		}
-
-		// 2. 从市场监控器获取1分钟K线数据
-		klines1m, err := market.WSMonitorCli.GetCurrentKlines(symbol, "1m")
-		if err != nil {
-			log.Printf("         [峰值追踪-空单] ⚠️ 获取1分钟K线失败: %v，使用当前价格", err)
-		} else {
-			// 过滤开仓时间之后的K线
-			var filteredKlines []market.Kline
-			for _, kline := range klines1m {
-				if kline.OpenTime >= openTime {
-					filteredKlines = append(filteredKlines, kline)
-				}
-			}
-
-			if len(filteredKlines) > 0 {
-				log.Printf("         [峰值追踪-空单] 找到 %d 根开仓时间后的1分钟K线（总共 %d 根）",
-					len(filteredKlines), len(klines1m))
-
-				minKlinePrice := peakPrice
-				for _, kline := range filteredKlines {
-					if kline.Low < minKlinePrice {
-						minKlinePrice = kline.Low
-					}
-				}
-
-				if minKlinePrice < peakPrice {
-					log.Printf("         [峰值追踪-空单] K线最低价 %.4f < 峰值 %.4f（检查了%d根K线），更新峰值",
-						minKlinePrice, peakPrice, len(filteredKlines))
-					peakPrice = minKlinePrice
-				} else {
-					log.Printf("         [峰值追踪-空单] K线最低价 %.4f ≥ 峰值 %.4f（检查了%d根K线），保持峰值",
-						minKlinePrice, peakPrice, len(filteredKlines))
-				}
-			} else {
-				log.Printf("         [峰值追踪-空单] ⚠️ 未找到开仓时间后的K线，使用当前价格")
-			}
-		}
-
-		// 3. 检查缓存中的历史最低价
-		m.mu.RLock()
-		cachedPeak, exists := m.historicalPeakPrices[posKey]
-		m.mu.RUnlock()
-		if exists {
-			if cachedPeak < peakPrice {
-				log.Printf("         [峰值追踪-空单] 缓存峰值 %.4f < 当前峰值 %.4f，使用缓存值", cachedPeak, peakPrice)
-				peakPrice = cachedPeak
-			} else {
-				log.Printf("         [峰值追踪-空单] 缓存峰值 %.4f ≥ 当前峰值 %.4f，更新缓存", cachedPeak, peakPrice)
-			}
-		} else {
-			log.Printf("         [峰值追踪-空单] 首次记录峰值 %.4f", peakPrice)
-		}
-
-		// 4. 更新缓存
-		m.mu.Lock()
-		m.historicalPeakPrices[posKey] = peakPrice
-		m.mu.Unlock()
-
-		log.Printf("         [峰值追踪-空单] ✅ 最终峰值价格: %.4f", peakPrice)
-	}
-
-	return peakPrice
-}
-
-// calculateTrailingStopPrice 计算追踪止损价格（根据收益区间动态调整回撤）
-func (m *TrailingStopMonitor) calculateTrailingStopPrice(side string, entryPrice, peakPrice, retainPct, drawdownPct float64) float64 {
-	var stopLoss float64
-	if side == "long" {
-		// 多单：
-		// 收益空间 = 峰值价 - 入场价
-		// 止损价 = 入场价 + 收益空间 × 保留收益比例
-		profitSpace := peakPrice - entryPrice
-		stopLoss = entryPrice + profitSpace*retainPct
-
-		log.Printf("         [止损计算-多单] 收益空间: %.4f (峰值 %.4f - 入场 %.4f)",
-			profitSpace, peakPrice, entryPrice)
-		log.Printf("         [止损计算-多单] 允许回撤: %.0f%% | 保留收益: %.2f%% | 止损价: %.4f + %.4f × %.0f%% = %.4f",
-			drawdownPct*100, retainPct*100, entryPrice, profitSpace, retainPct*100, stopLoss)
-	} else {
-		// 空单：
-		// 收益空间 = 入场价 - 峰值价
-		// 止损价 = 入场价 - 收益空间 × 保留收益比例
-		profitSpace := entryPrice - peakPrice
-		stopLoss = entryPrice - profitSpace*retainPct
-
-		log.Printf("         [止损计算-空单] 收益空间: %.4f (入场 %.4f - 峰值 %.4f)",
-			profitSpace, entryPrice, peakPrice)
-		log.Printf("         [止损计算-空单] 允许回撤: %.0f%% | 保留收益: %.2f%% | 止损价: %.4f - %.4f × %.0f%% = %.4f",
-			drawdownPct*100, retainPct*100, entryPrice, profitSpace, retainPct*100, stopLoss)
-	}
-
-	return stopLoss
 }
 
 // isStopLossValid 验证止损价是否有效，并返回是否需要立即触发紧急平仓
@@ -725,13 +600,13 @@ func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLo
 
 	if side == "long" {
 		// 多单止损必须满足：
-		// 1. 止损价高于入场价（保护利润）
-		log.Printf("         [验证-多单] 检查1: 止损价 %.4f > 入场价 %.4f?", newStopLoss, entryPrice)
-		if newStopLoss <= entryPrice {
-			log.Printf("         [验证-多单] ❌ 失败: 止损价 %.4f ≤ 入场价 %.4f（无法保护利润）", newStopLoss, entryPrice)
+		// 1. 止损价不低于入场价（允许等于开仓价实现保本）
+		log.Printf("         [验证-多单] 检查1: 止损价 %.4f ≥ 入场价 %.4f?", newStopLoss, entryPrice)
+		if newStopLoss < entryPrice {
+			log.Printf("         [验证-多单] ❌ 失败: 止损价 %.4f < 入场价 %.4f（无法保护利润）", newStopLoss, entryPrice)
 			return false, false
 		}
-		log.Printf("         [验证-多单] ✅ 通过: 止损价高于入场价，可保护利润")
+		log.Printf("         [验证-多单] ✅ 通过: 止损价不低于入场价，可保护利润/保本")
 
 		// 2. 止损价低于当前价（合理性检查）
 		log.Printf("         [验证-多单] 检查2: 止损价 %.4f < 当前价 %.4f?", newStopLoss, currentPrice)
@@ -743,13 +618,13 @@ func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLo
 
 	} else {
 		// 空单止损必须满足：
-		// 1. 止损价低于入场价（保护利润）
-		log.Printf("         [验证-空单] 检查1: 止损价 %.4f < 入场价 %.4f?", newStopLoss, entryPrice)
-		if newStopLoss >= entryPrice {
-			log.Printf("         [验证-空单] ❌ 失败: 止损价 %.4f ≥ 入场价 %.4f（无法保护利润）", newStopLoss, entryPrice)
+		// 1. 止损价不高于入场价（允许等于开仓价实现保本）
+		log.Printf("         [验证-空单] 检查1: 止损价 %.4f ≤ 入场价 %.4f?", newStopLoss, entryPrice)
+		if newStopLoss > entryPrice {
+			log.Printf("         [验证-空单] ❌ 失败: 止损价 %.4f > 入场价 %.4f（无法保护利润）", newStopLoss, entryPrice)
 			return false, false
 		}
-		log.Printf("         [验证-空单] ✅ 通过: 止损价低于入场价，可保护利润")
+		log.Printf("         [验证-空单] ✅ 通过: 止损价不高于入场价，可保护利润/保本")
 
 		// 2. 止损价高于当前价（合理性检查）
 		log.Printf("         [验证-空单] 检查2: 止损价 %.4f > 当前价 %.4f?", newStopLoss, currentPrice)
@@ -765,7 +640,7 @@ func (m *TrailingStopMonitor) isStopLossValid(side string, entryPrice, newStopLo
 }
 
 // updateStopLoss 更新止损价（使用统一的止损更新逻辑）
-func (m *TrailingStopMonitor) updateStopLoss(symbol, side string, quantity, newStopLoss, currentPrice, retainPct, drawdownPct float64) error {
+func (m *TrailingStopMonitor) updateStopLoss(symbol, side string, quantity, newStopLoss, currentPrice float64, reason string) error {
 	posKey := symbol + "_" + side
 
 	// 🚨 优先检查：止损价是否已被触发（价格跌破/突破止损线）
@@ -837,13 +712,16 @@ func (m *TrailingStopMonitor) updateStopLoss(symbol, side string, quantity, newS
 	log.Printf("         [追踪止损] 调用统一止损更新接口...")
 	log.Printf("         [追踪止损] 币种: %s | 方向: %s | 数量: %.4f | 止损价: %.4f",
 		symbol, strings.ToUpper(side), quantity, newStopLoss)
+	if reason == "" {
+		reason = fmt.Sprintf("R-based 分段追踪: 止损调整至 %.4f", newStopLoss)
+	}
 
 	// 构建 Decision 对象（用于 executeUpdateStopLossWithRecord）
 	d := &decision.Decision{
 		Symbol:      symbol,
 		Action:      "update_stop_loss",
 		NewStopLoss: newStopLoss,
-		Reasoning:   fmt.Sprintf("追踪止损自动调整: 允许%.0f%%回撤（保留%.0f%%收益），止损价 %.4f", drawdownPct*100, retainPct*100, newStopLoss),
+		Reasoning:   reason,
 	}
 
 	// 构建 DecisionAction 记录（用于日志记录）
@@ -942,19 +820,31 @@ func (m *TrailingStopMonitor) ClearPosition(symbol, side string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 清除峰值缓存
-	if peakPrice, exists := m.historicalPeakPrices[posKey]; exists {
-		delete(m.historicalPeakPrices, posKey)
-		log.Printf("🧹 [追踪止损] 清除 %s 峰值缓存 (峰值价: %.4f)", posKey, peakPrice)
-	} else {
-		log.Printf("🧹 [追踪止损] %s 峰值缓存不存在", posKey)
-	}
-
 	// 清除止损价缓存
 	if stopLoss, exists := m.lastStopLossPrices[posKey]; exists {
 		delete(m.lastStopLossPrices, posKey)
 		log.Printf("🧹 [追踪止损] 清除 %s 止损价缓存 (止损价: %.4f)", posKey, stopLoss)
 	} else {
 		log.Printf("🧹 [追踪止损] %s 止损价缓存不存在", posKey)
+	}
+
+	if risk, exists := m.riskStates[posKey]; exists {
+		delete(m.riskStates, posKey)
+		log.Printf("🧹 [追踪止损] 清除 %s 风险分段缓存 (初始止损: %.4f)", posKey, risk.InitialStop)
+	}
+}
+
+func formatStageName(stage int) string {
+	switch stage {
+	case rStageInitial:
+		return "阶段0 (等待+1R)"
+	case rStageBreakeven:
+		return "阶段1 (+1R已触发)"
+	case rStageLockOneR:
+		return "阶段2 (+2R已触发)"
+	case rStageATR:
+		return "阶段3 (ATR Trailing 待实现)"
+	default:
+		return fmt.Sprintf("阶段%d", stage)
 	}
 }
