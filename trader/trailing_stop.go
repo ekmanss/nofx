@@ -6,137 +6,12 @@ import (
 	"math"
 	"nofx/decision"
 	"nofx/logger"
-	"nofx/market"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-type sharedTrailingStopEntry struct {
-	monitor *TrailingStopMonitor
-	owners  map[string]*AutoTrader
-}
-
-// SharedTrailingStopMonitor 为共享账户提供引用计数包装
-type SharedTrailingStopMonitor struct {
-	accountKey string
-	traderID   string
-	entry      *sharedTrailingStopEntry
-}
-
-var (
-	sharedTrailingStopMu sync.Mutex
-	sharedTrailingStops  = make(map[string]*sharedTrailingStopEntry)
-)
-
-// AcquireSharedTrailingStopMonitor 获取/创建共享的追踪止损监控器
-func AcquireSharedTrailingStopMonitor(at *AutoTrader) *SharedTrailingStopMonitor {
-	if at == nil {
-		return nil
-	}
-
-	if at.accountKey == "" {
-		at.accountKey = generateAccountKey(at.config)
-	}
-
-	sharedTrailingStopMu.Lock()
-	defer sharedTrailingStopMu.Unlock()
-
-	entry, exists := sharedTrailingStops[at.accountKey]
-	if !exists {
-		entry = &sharedTrailingStopEntry{
-			monitor: NewTrailingStopMonitor(at),
-			owners:  make(map[string]*AutoTrader),
-		}
-		sharedTrailingStops[at.accountKey] = entry
-		log.Printf("🆕 [追踪止损] 创建账户监控器: %s (首个交易员: %s)", maskAccountKey(at.accountKey), at.name)
-	} else {
-		log.Printf("♻️ [追踪止损] 复用账户监控器: %s (新增交易员: %s)", maskAccountKey(at.accountKey), at.name)
-	}
-
-	entry.owners[at.id] = at
-	entry.monitor.SetOwner(at)
-
-	return &SharedTrailingStopMonitor{
-		accountKey: at.accountKey,
-		traderID:   at.id,
-		entry:      entry,
-	}
-}
-
-func maskAccountKey(key string) string {
-	if len(key) <= 8 {
-		return key
-	}
-	return fmt.Sprintf("%s...%s", key[:4], key[len(key)-4:])
-}
-
-// Start 启动共享监控器
-func (m *SharedTrailingStopMonitor) Start() {
-	if m == nil || m.entry == nil {
-		return
-	}
-	m.entry.monitor.Start()
-}
-
-// Stop 释放共享监控器引用
-func (m *SharedTrailingStopMonitor) Stop() {
-	if m == nil || m.entry == nil {
-		return
-	}
-
-	var (
-		monitorToStop *TrailingStopMonitor
-		nextOwner     *AutoTrader
-		remaining     int
-	)
-
-	sharedTrailingStopMu.Lock()
-	if entry, exists := sharedTrailingStops[m.accountKey]; exists && entry == m.entry {
-		delete(entry.owners, m.traderID)
-		remaining = len(entry.owners)
-		if remaining == 0 {
-			delete(sharedTrailingStops, m.accountKey)
-			monitorToStop = entry.monitor
-		} else {
-			for _, candidate := range entry.owners {
-				nextOwner = candidate
-				break
-			}
-		}
-	}
-	sharedTrailingStopMu.Unlock()
-
-	if monitorToStop != nil {
-		monitorToStop.Stop()
-		log.Printf("🛑 [追踪止损] 关闭账户监控器: %s（无活跃交易员）", maskAccountKey(m.accountKey))
-	} else if nextOwner != nil {
-		m.entry.monitor.SetOwner(nextOwner)
-		log.Printf("👑 [追踪止损] 切换监控器负责人 → %s (账户: %s)", nextOwner.name, maskAccountKey(m.accountKey))
-	}
-
-	m.entry = nil
-}
-
-// ClearPosition 透传到真实监控器
-func (m *SharedTrailingStopMonitor) ClearPosition(symbol, side string) {
-	if m == nil || m.entry == nil {
-		return
-	}
-	m.entry.monitor.ClearPosition(symbol, side)
-}
-
-// RegisterInitialStop 将开仓时的初始止损透传给真实监控器
-func (m *SharedTrailingStopMonitor) RegisterInitialStop(symbol, side string, stop float64) {
-	if m == nil || m.entry == nil {
-		return
-	}
-	m.entry.monitor.RegisterInitialStop(symbol, side, stop)
-}
-
 // TrailingStopMonitor 动态追踪止损监控器
-// 功能：当持仓收益>2%时，自动设置动态止损，从最高价回撤40%时触发
 type TrailingStopMonitor struct {
 	trader             *AutoTrader
 	riskStates         map[string]*riskStageInfo
@@ -155,27 +30,11 @@ const (
 	rStageBreakeven        // +1R，止损移至开仓价
 	rStageLockOneR         // +2R，止损锁定 +1R
 	rStageATR              // +3R 启动 ATR Trailing
-
-	atrTrailingMultiplier = 2.0
-	atr1HPeriod           = 14
 )
-
-type positionSnapshot struct {
-	Symbol     string
-	Side       string
-	EntryPrice float64
-	MarkPrice  float64
-	Quantity   float64
-	Leverage   int
-}
 
 type riskStageInfo struct {
 	InitialStop float64
 	Stage       int
-}
-
-func (p positionSnapshot) key() string {
-	return p.Symbol + "_" + p.Side
 }
 
 // NewTrailingStopMonitor 创建动态止损监控器
@@ -233,104 +92,6 @@ func (m *TrailingStopMonitor) setRiskStage(posKey string, stage int) {
 
 	if info, ok := m.riskStates[posKey]; ok {
 		info.Stage = stage
-	}
-}
-
-func newPositionSnapshot(raw map[string]interface{}) (*positionSnapshot, error) {
-	symbol, err := stringFromAny(raw["symbol"])
-	if err != nil {
-		return nil, fmt.Errorf("symbol 字段缺失: %w", err)
-	}
-
-	sideRaw, err := stringFromAny(raw["side"])
-	if err != nil {
-		return nil, fmt.Errorf("%s 缺少 side 字段: %w", symbol, err)
-	}
-	side := strings.ToLower(sideRaw)
-	if side != "long" && side != "short" {
-		return nil, fmt.Errorf("%s 无效方向: %s", symbol, sideRaw)
-	}
-
-	entryPrice, err := floatFromAny(raw["entryPrice"])
-	if err != nil {
-		return nil, fmt.Errorf("%s %s entryPrice 解析失败: %w", symbol, side, err)
-	}
-
-	markPrice, err := floatFromAny(raw["markPrice"])
-	if err != nil {
-		return nil, fmt.Errorf("%s %s markPrice 解析失败: %w", symbol, side, err)
-	}
-
-	quantity, err := floatFromAny(raw["positionAmt"])
-	if err != nil {
-		return nil, fmt.Errorf("%s %s positionAmt 解析失败: %w", symbol, side, err)
-	}
-	quantity = math.Abs(quantity)
-
-	leverage := defaultLeverage
-	if lev, err := floatFromAny(raw["leverage"]); err == nil && lev > 0 {
-		leverage = int(math.Round(math.Max(lev, 1)))
-	}
-
-	return &positionSnapshot{
-		Symbol:     symbol,
-		Side:       side,
-		EntryPrice: entryPrice,
-		MarkPrice:  markPrice,
-		Quantity:   quantity,
-		Leverage:   leverage,
-	}, nil
-}
-
-func stringFromAny(value interface{}) (string, error) {
-	switch v := value.(type) {
-	case string:
-		trimmed := strings.TrimSpace(v)
-		if trimmed == "" {
-			return "", fmt.Errorf("字符串为空")
-		}
-		return trimmed, nil
-	case fmt.Stringer:
-		trimmed := strings.TrimSpace(v.String())
-		if trimmed == "" {
-			return "", fmt.Errorf("字符串为空")
-		}
-		return trimmed, nil
-	case nil:
-		return "", fmt.Errorf("值缺失")
-	default:
-		return "", fmt.Errorf("类型 %T 不能转换为字符串", value)
-	}
-}
-
-func floatFromAny(value interface{}) (float64, error) {
-	switch v := value.(type) {
-	case float64:
-		return v, nil
-	case float32:
-		return float64(v), nil
-	case int:
-		return float64(v), nil
-	case int64:
-		return float64(v), nil
-	case uint:
-		return float64(v), nil
-	case uint64:
-		return float64(v), nil
-	case string:
-		trimmed := strings.TrimSpace(v)
-		if trimmed == "" {
-			return 0, fmt.Errorf("字符串为空")
-		}
-		parsed, err := strconv.ParseFloat(trimmed, 64)
-		if err != nil {
-			return 0, err
-		}
-		return parsed, nil
-	case nil:
-		return 0, fmt.Errorf("值缺失")
-	default:
-		return 0, fmt.Errorf("类型 %T 不能转换为浮点数", value)
 	}
 }
 
@@ -612,74 +373,6 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, ind
 	m.setRiskStage(posKey, nextStage)
 	log.Printf("      ✅ 成功设置分段止损，阶段切换为 %s", formatStageName(nextStage))
 	return true, false
-}
-
-func (m *TrailingStopMonitor) calculateATRTrailingStop(pos *positionSnapshot, riskDistance float64) (float64, string, error) {
-	data, err := market.Get(pos.Symbol)
-	if err != nil {
-		return 0, "", fmt.Errorf("获取市场数据失败: %w", err)
-	}
-
-	var atr float64
-	if data != nil && len(data.Klines1h) > 0 {
-		atr = calculateATRFromKlines(data.Klines1h, atr1HPeriod)
-	}
-
-	if atr <= 0 {
-		return 0, "", fmt.Errorf("1H ATR14 数据不可用")
-	}
-
-	var newStop float64
-	if pos.Side == "long" {
-		newStop = pos.MarkPrice - atr*atrTrailingMultiplier
-		minStop := pos.EntryPrice + riskDistance // 保持 ≥ +1R
-		if newStop < minStop {
-			newStop = minStop
-		}
-	} else {
-		newStop = pos.MarkPrice + atr*atrTrailingMultiplier
-		maxStop := pos.EntryPrice - riskDistance
-		if newStop > maxStop {
-			newStop = maxStop
-		}
-	}
-
-	reason := fmt.Sprintf(
-		"ATR Trailing: ATR(1H,14)=%.4f × %.2f → 止损 %.4f",
-		atr, atrTrailingMultiplier, newStop,
-	)
-	return newStop, reason, nil
-}
-
-func calculateATRFromKlines(klines []market.Kline, period int) float64 {
-	if len(klines) <= period {
-		return 0
-	}
-
-	trs := make([]float64, len(klines))
-	for i := 1; i < len(klines); i++ {
-		high := klines[i].High
-		low := klines[i].Low
-		prevClose := klines[i-1].Close
-
-		tr1 := high - low
-		tr2 := math.Abs(high - prevClose)
-		tr3 := math.Abs(low - prevClose)
-
-		trs[i] = math.Max(tr1, math.Max(tr2, tr3))
-	}
-
-	sum := 0.0
-	for i := 1; i <= period; i++ {
-		sum += trs[i]
-	}
-	atr := sum / float64(period)
-
-	for i := period + 1; i < len(klines); i++ {
-		atr = (atr*float64(period-1) + trs[i]) / float64(period)
-	}
-
-	return atr
 }
 
 // isStopLossValid 验证止损价是否有效，并返回是否需要立即触发紧急平仓
