@@ -324,15 +324,36 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 		sb.WriteString("\n\n")
 	}
 
-	// 2. 硬约束（风险控制）- 动态生成
+	//// 2. 硬约束（风险控制）- 动态生成
+	//sb.WriteString("# 硬约束（风险控制）\n\n")
+	//sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
+	//sb.WriteString("2. 最多持仓: 3个币种（质量>数量）\n")
+	//sb.WriteString(fmt.Sprintf("3. 单币仓位: 山寨%.0f-%.0f U | BTC/ETH %.0f-%.0f U\n",
+	//	accountEquity*0.8, accountEquity*1.5, accountEquity*5, accountEquity*10))
+	//sb.WriteString(fmt.Sprintf("4. 杠杆限制: **山寨币最大%dx杠杆** | **BTC/ETH最大%dx杠杆** (⚠️ 严格执行，不可超过)\n", altcoinLeverage, btcEthLeverage))
+	//sb.WriteString("5. 保证金: 总使用率 ≤ 90%\n")
+	//sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n\n")
+
+	// 2. 硬约束（风险控制）- 基于 1R 模型动态生成
+	// 1R = 账户总权益的 3%
+	riskPerTrade := accountEquity * 0.03
+
 	sb.WriteString("# 硬约束（风险控制）\n\n")
-	sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（冒1%风险，赚3%+收益）\n")
-	sb.WriteString("2. 最多持仓: 3个币种（质量>数量）\n")
-	sb.WriteString(fmt.Sprintf("3. 单币仓位: 山寨%.0f-%.0f U | BTC/ETH %.0f-%.0f U\n",
-		accountEquity*0.8, accountEquity*1.5, accountEquity*5, accountEquity*10))
-	sb.WriteString(fmt.Sprintf("4. 杠杆限制: **山寨币最大%dx杠杆** | **BTC/ETH最大%dx杠杆** (⚠️ 严格执行，不可超过)\n", altcoinLeverage, btcEthLeverage))
-	sb.WriteString("5. 保证金: 总使用率 ≤ 90%\n")
-	sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n\n")
+	sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（至少赚 3R，即风险的 3 倍）\n")
+	sb.WriteString(fmt.Sprintf("2. 固定风险（1R 模型）: 单笔最大亏损 = 1R = 账户权益的 3%% ≈ %.2f USDT\n", riskPerTrade))
+
+	sb.WriteString("3. 仓位计算规则（必须严格执行）:\n")
+	sb.WriteString("   - 先根据技术结构确定止损价位（SL），禁止为了缩小止损而瞎改信号。\n")
+	sb.WriteString("   - 计算止损距离: 止损距离 = |入场价 - 止损价| / 入场价（用小数表示，例如 0.03 表示 3%）。\n")
+	sb.WriteString("   - 计算名义仓位: 名义仓位 = 账户权益 × 3% ÷ 止损距离。\n")
+	sb.WriteString("   - 要求：若止损被触发，本笔实际亏损 ≈ 1R（账户权益的 3%）。\n")
+	sb.WriteString("   - 禁止使用固定 U 金额或固定张数开仓，所有仓位必须由 1R 和止损距离动态计算。\n\n")
+
+	sb.WriteString(fmt.Sprintf(
+		"4. 杠杆限制: **山寨币最大 %dx 杠杆** | **BTC/ETH 最大 %dx 杠杆**（⚠️ 严格执行，不可超过）。\n",
+		altcoinLeverage, btcEthLeverage,
+	))
+	sb.WriteString("5. 最小开仓约束: 名义价值必须 ≥ 12 USDT（满足交易所最小名义价值 10 USDT + 安全边际）。\n\n")
 
 	// 3. 输出格式 - 动态生成
 	sb.WriteString("# 输出格式 (严格遵守)\n\n")
@@ -350,7 +371,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	sb.WriteString("</decision>\n\n")
 	sb.WriteString("## 字段说明\n\n")
 	sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
-	sb.WriteString("- `confidence`: 0-100（开仓建议≥75）\n")
+	sb.WriteString("- `confidence`: 0-100\n")
 	sb.WriteString("- 开仓时必填: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd, reasoning\n\n")
 
 	return sb.String()
