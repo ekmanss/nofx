@@ -6,6 +6,7 @@ import (
 	"math"
 	"nofx/decision"
 	"nofx/logger"
+	"nofx/market"
 	"strconv"
 	"strings"
 	"sync"
@@ -153,7 +154,10 @@ const (
 	rStageInitial   = iota // 尚未达到 +1R
 	rStageBreakeven        // +1R，止损移至开仓价
 	rStageLockOneR         // +2R，止损锁定 +1R
-	rStageATR              // +3R，待接入 ATR Trailing
+	rStageATR              // +3R 启动 ATR Trailing
+
+	atrTrailingMultiplier = 2.0
+	atr1HPeriod           = 14
 )
 
 type positionSnapshot struct {
@@ -548,15 +552,31 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, ind
 		}
 	case rStageLockOneR:
 		if currentR >= 3.0 {
-			log.Printf("      🎯 +3R 已达成，后续需启用 ATR Trailing（TODO）")
-			m.setRiskStage(posKey, rStageATR)
-			return false, false
+			log.Printf("      🎯 +3R 达成，启动 ATR Trailing")
+			atrStop, atrReason, err := m.calculateATRTrailingStop(pos, riskDistance)
+			if err != nil {
+				log.Printf("      ⚠️  ATR Trailing 数据不足: %v", err)
+				return false, true
+			}
+			shouldUpdate = true
+			nextStage = rStageATR
+			newStopLoss = atrStop
+			reason = atrReason
 		}
-		log.Printf("      ⏳ 当前 %.2fR，等待达到 +3R 以启动 ATR Trailing", currentR)
-		return false, true
+		if !shouldUpdate {
+			log.Printf("      ⏳ 当前 %.2fR，等待达到 +3R 以启动 ATR Trailing", currentR)
+			return false, true
+		}
 	case rStageATR:
-		log.Printf("      🕒 ATR Trailing 阶段 TODO：尚未实现自动跟踪")
-		return false, true
+		atrStop, atrReason, err := m.calculateATRTrailingStop(pos, riskDistance)
+		if err != nil {
+			log.Printf("      ⚠️  ATR Trailing 计算失败: %v", err)
+			return false, true
+		}
+		shouldUpdate = true
+		nextStage = rStageATR
+		newStopLoss = atrStop
+		reason = atrReason
 	default:
 		log.Printf("      ⚠️ 未知分段状态 %d，跳过", riskInfo.Stage)
 		return false, true
@@ -592,6 +612,74 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, ind
 	m.setRiskStage(posKey, nextStage)
 	log.Printf("      ✅ 成功设置分段止损，阶段切换为 %s", formatStageName(nextStage))
 	return true, false
+}
+
+func (m *TrailingStopMonitor) calculateATRTrailingStop(pos *positionSnapshot, riskDistance float64) (float64, string, error) {
+	data, err := market.Get(pos.Symbol)
+	if err != nil {
+		return 0, "", fmt.Errorf("获取市场数据失败: %w", err)
+	}
+
+	var atr float64
+	if data != nil && len(data.Klines1h) > 0 {
+		atr = calculateATRFromKlines(data.Klines1h, atr1HPeriod)
+	}
+
+	if atr <= 0 {
+		return 0, "", fmt.Errorf("1H ATR14 数据不可用")
+	}
+
+	var newStop float64
+	if pos.Side == "long" {
+		newStop = pos.MarkPrice - atr*atrTrailingMultiplier
+		minStop := pos.EntryPrice + riskDistance // 保持 ≥ +1R
+		if newStop < minStop {
+			newStop = minStop
+		}
+	} else {
+		newStop = pos.MarkPrice + atr*atrTrailingMultiplier
+		maxStop := pos.EntryPrice - riskDistance
+		if newStop > maxStop {
+			newStop = maxStop
+		}
+	}
+
+	reason := fmt.Sprintf(
+		"ATR Trailing: ATR(1H,14)=%.4f × %.2f → 止损 %.4f",
+		atr, atrTrailingMultiplier, newStop,
+	)
+	return newStop, reason, nil
+}
+
+func calculateATRFromKlines(klines []market.Kline, period int) float64 {
+	if len(klines) <= period {
+		return 0
+	}
+
+	trs := make([]float64, len(klines))
+	for i := 1; i < len(klines); i++ {
+		high := klines[i].High
+		low := klines[i].Low
+		prevClose := klines[i-1].Close
+
+		tr1 := high - low
+		tr2 := math.Abs(high - prevClose)
+		tr3 := math.Abs(low - prevClose)
+
+		trs[i] = math.Max(tr1, math.Max(tr2, tr3))
+	}
+
+	sum := 0.0
+	for i := 1; i <= period; i++ {
+		sum += trs[i]
+	}
+	atr := sum / float64(period)
+
+	for i := period + 1; i < len(klines); i++ {
+		atr = (atr*float64(period-1) + trs[i]) / float64(period)
+	}
+
+	return atr
 }
 
 // isStopLossValid 验证止损价是否有效，并返回是否需要立即触发紧急平仓
@@ -843,7 +931,7 @@ func formatStageName(stage int) string {
 	case rStageLockOneR:
 		return "阶段2 (+2R已触发)"
 	case rStageATR:
-		return "阶段3 (ATR Trailing 待实现)"
+		return "阶段3 (ATR Trailing)"
 	default:
 		return fmt.Sprintf("阶段%d", stage)
 	}
