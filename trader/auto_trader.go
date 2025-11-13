@@ -101,6 +101,7 @@ type AutoTrader struct {
 	startTime             time.Time                  // 系统启动时间
 	callCount             int                        // AI调用次数
 	positionFirstSeenTime map[string]int64           // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
+	positionTimeMu        sync.RWMutex               // 保护 positionFirstSeenTime
 	stopMonitorCh         chan struct{}              // 用于停止监控goroutine
 	monitorWg             sync.WaitGroup             // 用于等待监控goroutine结束
 	peakPnLCache          map[string]float64         // 最高收益缓存 (symbol -> 峰值盈亏百分比)
@@ -724,11 +725,7 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 		// 跟踪持仓首次出现时间
 		posKey := symbol + "_" + side
 		currentPositionKeys[posKey] = true
-		if _, exists := at.positionFirstSeenTime[posKey]; !exists {
-			// 新持仓，记录当前时间
-			at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
-		}
-		updateTime := at.positionFirstSeenTime[posKey]
+		updateTime := at.ensurePositionFirstSeenTime(posKey)
 
 		// 获取该持仓的历史最高收益率
 		at.peakPnLCacheMutex.RLock()
@@ -752,11 +749,7 @@ func (at *AutoTrader) buildTradingContext() (*decision.Context, error) {
 	}
 
 	// 清理已平仓的持仓记录
-	for key := range at.positionFirstSeenTime {
-		if !currentPositionKeys[key] {
-			delete(at.positionFirstSeenTime, key)
-		}
-	}
+	at.prunePositionFirstSeenTimes(currentPositionKeys)
 
 	// 3. 获取交易员的候选币种池
 	candidateCoins, err := at.getCandidateCoins()
@@ -901,7 +894,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 
 	// 记录开仓时间
 	posKey := decision.Symbol + "_long"
-	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
+	at.setPositionFirstSeenTime(posKey, time.Now().UnixMilli())
 
 	// 设置止损止盈
 	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
@@ -981,7 +974,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 
 	// 记录开仓时间
 	posKey := decision.Symbol + "_short"
-	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
+	at.setPositionFirstSeenTime(posKey, time.Now().UnixMilli())
 
 	// 设置止损止盈
 	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {
@@ -1827,4 +1820,65 @@ func (at *AutoTrader) ClearPeakPnLCache(symbol, side string) {
 
 	posKey := symbol + "_" + side
 	delete(at.peakPnLCache, posKey)
+}
+
+// positionFirstSeenTime helpers ------------------------------------------------
+
+func (at *AutoTrader) ensurePositionFirstSeenTime(posKey string) int64 {
+	if posKey == "" {
+		return 0
+	}
+
+	now := time.Now().UnixMilli()
+	at.positionTimeMu.Lock()
+	defer at.positionTimeMu.Unlock()
+
+	if ts, exists := at.positionFirstSeenTime[posKey]; exists {
+		return ts
+	}
+
+	at.positionFirstSeenTime[posKey] = now
+	return now
+}
+
+func (at *AutoTrader) setPositionFirstSeenTime(posKey string, timestamp int64) {
+	if posKey == "" {
+		return
+	}
+
+	at.positionTimeMu.Lock()
+	at.positionFirstSeenTime[posKey] = timestamp
+	at.positionTimeMu.Unlock()
+}
+
+func (at *AutoTrader) prunePositionFirstSeenTimes(activeKeys map[string]bool) {
+	at.positionTimeMu.Lock()
+	defer at.positionTimeMu.Unlock()
+
+	if len(at.positionFirstSeenTime) == 0 {
+		return
+	}
+
+	if len(activeKeys) == 0 {
+		for key := range at.positionFirstSeenTime {
+			delete(at.positionFirstSeenTime, key)
+		}
+		return
+	}
+
+	for key := range at.positionFirstSeenTime {
+		if !activeKeys[key] {
+			delete(at.positionFirstSeenTime, key)
+		}
+	}
+}
+
+func (at *AutoTrader) getPositionFirstSeenTime(posKey string) int64 {
+	if at == nil || posKey == "" {
+		return 0
+	}
+
+	at.positionTimeMu.RLock()
+	defer at.positionTimeMu.RUnlock()
+	return at.positionFirstSeenTime[posKey]
 }

@@ -361,10 +361,12 @@ func (m *TrailingStopMonitor) Stop() {
 // ProcessPositions 检查并更新动态止损
 func (m *TrailingStopMonitor) ProcessPositions(positions []map[string]interface{}) {
 	if len(positions) == 0 {
+		m.cleanupInactivePositions(nil)
 		return
 	}
 
 	var activePositions []*positionSnapshot
+	activeKeys := make(map[string]struct{})
 	for _, raw := range positions {
 		snapshot, err := newPositionSnapshot(raw)
 		if err != nil {
@@ -375,7 +377,10 @@ func (m *TrailingStopMonitor) ProcessPositions(positions []map[string]interface{
 			continue
 		}
 		activePositions = append(activePositions, snapshot)
+		activeKeys[snapshot.key()] = struct{}{}
 	}
+
+	m.cleanupInactivePositions(activeKeys)
 
 	if len(activePositions) == 0 {
 		log.Printf("📊 [追踪止损] 当前无持仓，跳过检查")
@@ -405,6 +410,40 @@ func (m *TrailingStopMonitor) ProcessPositions(positions []map[string]interface{
 	log.Printf("📊 [追踪止损] 检查完成 - 总计: %d | 已更新: %d | 已跳过: %d",
 		checkedCount, updatedCount, skippedCount)
 	log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+}
+
+// cleanupInactivePositions 移除已平仓持仓的缓存，避免沿用历史峰值/止损
+func (m *TrailingStopMonitor) cleanupInactivePositions(activeKeys map[string]struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(m.historicalPeakPrices) == 0 && len(m.lastStopLossPrices) == 0 {
+		return
+	}
+
+	keep := func(key string) bool {
+		if len(activeKeys) == 0 {
+			return false
+		}
+		_, ok := activeKeys[key]
+		return ok
+	}
+
+	for key := range m.historicalPeakPrices {
+		if keep(key) {
+			continue
+		}
+		delete(m.historicalPeakPrices, key)
+		log.Printf("🧹 [追踪止损] 移除失效峰值缓存: %s", key)
+	}
+
+	for key := range m.lastStopLossPrices {
+		if keep(key) {
+			continue
+		}
+		delete(m.lastStopLossPrices, key)
+		log.Printf("🧹 [追踪止损] 移除失效止损缓存: %s", key)
+	}
 }
 
 func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, index, total int) (updated bool, skipped bool) {
@@ -445,7 +484,7 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *positionSnapshot, ind
 		drawdownPct*100, retainPct*100)
 
 	posKey := pos.key()
-	openTime := m.trader.positionFirstSeenTime[posKey]
+	openTime := m.trader.getPositionFirstSeenTime(posKey)
 	if openTime == 0 {
 		openTime = time.Now().UnixMilli()
 		log.Printf("      ⚠️  未找到开仓时间记录，使用当前时间")
