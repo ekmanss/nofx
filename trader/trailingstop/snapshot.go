@@ -21,7 +21,7 @@ type Snapshot struct {
 
 // Key returns a stable key for referencing the snapshot inside caches (symbol + side).
 func (s Snapshot) Key() string {
-	return s.Symbol + "_" + s.Side
+	return composePositionKey(s.Symbol, s.Side)
 }
 
 // NewSnapshot converts a raw position map (as returned by the exchange adapters) into a strongly typed Snapshot.
