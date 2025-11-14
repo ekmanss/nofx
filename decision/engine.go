@@ -13,6 +13,11 @@ import (
 	"time"
 )
 
+const (
+	// riskPerTradePercent 表示 1R 与账户权益的比例，方便集中管理（默认 2%）。
+	riskPerTradePercent = 0.02
+)
+
 // 预编译正则表达式（性能优化：避免每次调用时重新编译）
 var (
 	// ✅ 安全的正則：精確匹配 ```json 代碼塊
@@ -335,18 +340,19 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	//sb.WriteString("6. 开仓金额: 建议 **≥12 USDT** (交易所最小名义价值 10 USDT + 安全边际)\n\n")
 
 	// 2. 硬约束（风险控制）- 基于 1R 模型动态生成
-	// 1R = 账户总权益的 3%
-	riskPerTrade := accountEquity * 0.03
+	// 1R = 账户总权益的 riskPerTradePercent（默认 2%）
+	riskPerTrade := accountEquity * riskPerTradePercent
+	riskPercent := riskPerTradePercent * 100
 
 	sb.WriteString("# 硬约束（风险控制）\n\n")
 	sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（至少赚 3R，即风险的 3 倍）\n")
-	sb.WriteString(fmt.Sprintf("2. 固定风险（1R 模型）: 单笔最大亏损 = 1R = 账户权益的 3%% ≈ %.2f USDT\n", riskPerTrade))
+	sb.WriteString(fmt.Sprintf("2. 固定风险（1R 模型）: 单笔最大亏损 = 1R = 账户权益的 %.0f%% ≈ %.2f USDT\n", riskPercent, riskPerTrade))
 
 	sb.WriteString("3. 仓位计算规则（必须严格执行）:\n")
 	sb.WriteString("   - 先根据技术结构确定止损价位（SL），禁止为了缩小止损而瞎改信号。\n")
-	sb.WriteString("   - 计算止损距离: 止损距离 = |入场价 - 止损价| / 入场价（用小数表示，例如 0.03 表示 3%）。\n")
-	sb.WriteString("   - 计算名义仓位: 名义仓位 = 账户权益 × 3% ÷ 止损距离。\n")
-	sb.WriteString("   - 要求：若止损被触发，本笔实际亏损 ≈ 1R（账户权益的 3%）。\n")
+	sb.WriteString(fmt.Sprintf("   - 计算止损距离: 止损距离 = |入场价 - 止损价| / 入场价（用小数表示，例如 %.2f 表示 %.0f%%）。\n", riskPerTradePercent, riskPercent))
+	sb.WriteString(fmt.Sprintf("   - 计算名义仓位: 名义仓位 = 账户权益 × %.0f%% ÷ 止损距离。\n", riskPercent))
+	sb.WriteString(fmt.Sprintf("   - 要求：若止损被触发，本笔实际亏损 ≈ 1R（账户权益的 %.0f%%）。\n", riskPercent))
 	sb.WriteString("   - 禁止使用固定 U 金额或固定张数开仓，所有仓位必须由 1R 和止损距离动态计算。\n\n")
 
 	sb.WriteString(fmt.Sprintf(
