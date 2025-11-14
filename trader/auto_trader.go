@@ -11,6 +11,7 @@ import (
 	"nofx/market"
 	"nofx/mcp"
 	"nofx/pool"
+	"nofx/trader/trailingstop"
 	"strings"
 	"sync"
 	"time"
@@ -98,19 +99,66 @@ type AutoTrader struct {
 	lastResetTime         time.Time
 	stopUntil             time.Time
 	isRunning             bool
-	startTime             time.Time                  // 系统启动时间
-	callCount             int                        // AI调用次数
-	positionFirstSeenTime map[string]int64           // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
-	positionTimeMu        sync.RWMutex               // 保护 positionFirstSeenTime
-	stopMonitorCh         chan struct{}              // 用于停止监控goroutine
-	monitorWg             sync.WaitGroup             // 用于等待监控goroutine结束
-	peakPnLCache          map[string]float64         // 最高收益缓存 (symbol -> 峰值盈亏百分比)
-	peakPnLCacheMutex     sync.RWMutex               // 缓存读写锁
-	lastBalanceSyncTime   time.Time                  // 上次余额同步时间
-	database              interface{}                // 数据库引用（用于自动更新余额）
-	userID                string                     // 用户ID
-	trailingStopMonitor   *SharedTrailingStopMonitor // 动态追踪止损监控器（按账户共享）
-	accountKey            string                     // 唯一账户标识（用于共享止损监控器）
+	startTime             time.Time                   // 系统启动时间
+	callCount             int                         // AI调用次数
+	positionFirstSeenTime map[string]int64            // 持仓首次出现时间 (symbol_side -> timestamp毫秒)
+	positionTimeMu        sync.RWMutex                // 保护 positionFirstSeenTime
+	stopMonitorCh         chan struct{}               // 用于停止监控goroutine
+	monitorWg             sync.WaitGroup              // 用于等待监控goroutine结束
+	peakPnLCache          map[string]float64          // 最高收益缓存 (symbol -> 峰值盈亏百分比)
+	peakPnLCacheMutex     sync.RWMutex                // 缓存读写锁
+	lastBalanceSyncTime   time.Time                   // 上次余额同步时间
+	database              interface{}                 // 数据库引用（用于自动更新余额）
+	userID                string                      // 用户ID
+	trailingStopMonitor   *trailingstop.SharedMonitor // 动态追踪止损监控器（按账户共享）
+	accountKey            string                      // 唯一账户标识（用于共享止损监控器）
+}
+
+// --- trailingstop.Owner interface implementation ---
+
+func (at *AutoTrader) TraderID() string {
+	if at == nil {
+		return ""
+	}
+	return at.id
+}
+
+func (at *AutoTrader) TraderName() string {
+	if at == nil {
+		return ""
+	}
+	return at.name
+}
+
+func (at *AutoTrader) AccountKey() string {
+	if at == nil {
+		return ""
+	}
+	if at.accountKey == "" {
+		at.accountKey = generateAccountKey(at.config)
+	}
+	return at.accountKey
+}
+
+func (at *AutoTrader) TradingClient() trailingstop.TradingClient {
+	if at == nil {
+		return nil
+	}
+	return at.trader
+}
+
+func (at *AutoTrader) ExecuteStopLoss(decision *decision.Decision, action *logger.DecisionAction) error {
+	if at == nil {
+		return fmt.Errorf("auto trader 未初始化")
+	}
+	return at.executeUpdateStopLossWithRecord(decision, action)
+}
+
+func (at *AutoTrader) DecisionRecorder() trailingstop.DecisionRecorder {
+	if at == nil {
+		return nil
+	}
+	return at.decisionLogger
 }
 
 // NewAutoTrader 创建自动交易器
@@ -297,7 +345,7 @@ func (at *AutoTrader) Run() error {
 
 	// 获取并启动共享追踪止损监控器（独立运行，每5秒检查一次）
 	if at.trailingStopMonitor == nil {
-		at.trailingStopMonitor = AcquireSharedTrailingStopMonitor(at)
+		at.trailingStopMonitor = trailingstop.AcquireSharedTrailingStopMonitor(at)
 	}
 	if at.trailingStopMonitor != nil {
 		at.trailingStopMonitor.Start()

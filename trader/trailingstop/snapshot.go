@@ -1,4 +1,4 @@
-package trader
+package trailingstop
 
 import (
 	"fmt"
@@ -7,7 +7,10 @@ import (
 	"strings"
 )
 
-type positionSnapshot struct {
+const defaultLeverage = 5
+
+// Snapshot captures the essential information about an individual position used by the trailing stop logic.
+type Snapshot struct {
 	Symbol     string
 	Side       string
 	EntryPrice float64
@@ -16,11 +19,14 @@ type positionSnapshot struct {
 	Leverage   int
 }
 
-func (p positionSnapshot) key() string {
-	return p.Symbol + "_" + p.Side
+// Key returns a stable key for referencing the snapshot inside caches (symbol + side).
+func (s Snapshot) Key() string {
+	return s.Symbol + "_" + s.Side
 }
 
-func newPositionSnapshot(raw map[string]interface{}) (*positionSnapshot, error) {
+// NewSnapshot converts a raw position map (as returned by the exchange adapters) into a strongly typed Snapshot.
+// It performs strict validation so downstream logic can assume fields are valid.
+func NewSnapshot(raw map[string]interface{}) (*Snapshot, error) {
 	symbol, err := stringFromAny(raw["symbol"])
 	if err != nil {
 		return nil, fmt.Errorf("symbol 字段缺失: %w", err)
@@ -35,28 +41,28 @@ func newPositionSnapshot(raw map[string]interface{}) (*positionSnapshot, error) 
 		return nil, fmt.Errorf("%s 无效方向: %s", symbol, sideRaw)
 	}
 
-	entryPrice, err := floatFromAny(raw["entryPrice"])
+	entryPrice, err := FloatFromAny(raw["entryPrice"])
 	if err != nil {
 		return nil, fmt.Errorf("%s %s entryPrice 解析失败: %w", symbol, side, err)
 	}
 
-	markPrice, err := floatFromAny(raw["markPrice"])
+	markPrice, err := FloatFromAny(raw["markPrice"])
 	if err != nil {
 		return nil, fmt.Errorf("%s %s markPrice 解析失败: %w", symbol, side, err)
 	}
 
-	quantity, err := floatFromAny(raw["positionAmt"])
+	quantity, err := FloatFromAny(raw["positionAmt"])
 	if err != nil {
 		return nil, fmt.Errorf("%s %s positionAmt 解析失败: %w", symbol, side, err)
 	}
 	quantity = math.Abs(quantity)
 
 	leverage := defaultLeverage
-	if lev, err := floatFromAny(raw["leverage"]); err == nil && lev > 0 {
+	if lev, err := FloatFromAny(raw["leverage"]); err == nil && lev > 0 {
 		leverage = int(math.Round(math.Max(lev, 1)))
 	}
 
-	return &positionSnapshot{
+	return &Snapshot{
 		Symbol:     symbol,
 		Side:       side,
 		EntryPrice: entryPrice,
@@ -87,7 +93,8 @@ func stringFromAny(value interface{}) (string, error) {
 	}
 }
 
-func floatFromAny(value interface{}) (float64, error) {
+// FloatFromAny converts an interface{} to float64 with rich error messages.
+func FloatFromAny(value interface{}) (float64, error) {
 	switch v := value.(type) {
 	case float64:
 		return v, nil
