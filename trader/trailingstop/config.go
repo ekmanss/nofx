@@ -70,23 +70,23 @@ var defaultConfig = &Config{
 	AssetProfiles: map[string]*AssetProfile{
 		"btc": {
 			Ranges: []TrailingRange{
-				{MaxR: 3, LockRatio: 0.40, BaseATRMultiplier: 2.5, Label: "阶段2：BTC 早期锁盈 (1.2-3R)"},
-				{MaxR: 6, LockRatio: 0.50, BaseATRMultiplier: 2.2, Label: "阶段3：BTC 中段跟随 (3-6R)"},
-				{MaxR: 0, LockRatio: 0.60, BaseATRMultiplier: 2.0, Label: "阶段4：BTC 大波段 (6R+)"},
+				{MaxR: 3, LockRatio: 0.35, BaseATRMultiplier: 2.7, Label: "阶段2：BTC 早期锁盈 (1.2-3R)"},
+				{MaxR: 6, LockRatio: 0.50, BaseATRMultiplier: 2.3, Label: "阶段3：BTC 中段跟随 (3-6R)"},
+				{MaxR: 0, LockRatio: 0.65, BaseATRMultiplier: 2.1, Label: "阶段4：BTC 大波段 (6R+)"},
 			},
-			RegimeAdjustment:  RegimeAdjustment{LowThreshold: 0.004, LowMultiplier: 0.85, HighThreshold: 0.015, HighMultiplier: 1.25},
+			RegimeAdjustment:  RegimeAdjustment{LowThreshold: 0.005, LowMultiplier: 0.90, HighThreshold: 0.012, HighMultiplier: 1.2},
 			PeakDrawdownLimit: 0.12,
 			MaxRLockAlpha:     0.60,
 		},
 		"trend_alt": {
 			Ranges: []TrailingRange{
-				{MaxR: 4, LockRatio: 0.45, BaseATRMultiplier: 3.0, Label: "阶段2：ALT 早期锁盈 (1.2-4R)"},
+				{MaxR: 4, LockRatio: 0.40, BaseATRMultiplier: 3.1, Label: "阶段2：ALT 早期锁盈 (1.2-4R)"},
 				{MaxR: 8, LockRatio: 0.55, BaseATRMultiplier: 2.6, Label: "阶段3：ALT 中段跟随 (4-8R)"},
-				{MaxR: 0, LockRatio: 0.70, BaseATRMultiplier: 2.2, Label: "阶段4：ALT 大波段 (8R+)"},
+				{MaxR: 0, LockRatio: 0.70, BaseATRMultiplier: 2.3, Label: "阶段4：ALT 大波段 (8R+)"},
 			},
-			RegimeAdjustment:  RegimeAdjustment{LowThreshold: 0.008, LowMultiplier: 0.85, HighThreshold: 0.030, HighMultiplier: 1.35},
-			PeakDrawdownLimit: 0.18,
-			MaxRLockAlpha:     0.60,
+			RegimeAdjustment:  RegimeAdjustment{LowThreshold: 0.01, LowMultiplier: 0.90, HighThreshold: 0.050, HighMultiplier: 1.25},
+			PeakDrawdownLimit: 0.15,
+			MaxRLockAlpha:     0.45,
 		},
 	},
 }
