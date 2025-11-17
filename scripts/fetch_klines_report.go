@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	hourlyLimit       = 60
 	dailyLimit        = 20
 	weeklyDisplay     = 20
 	weeklyFetchLimit  = 80
@@ -36,6 +37,9 @@ func main() {
 	normalizedSymbol := market.Normalize(*symbol)
 	client := market.NewAPIClient()
 
+	hourly, err := client.GetKlines(normalizedSymbol, "1h", hourlyLimit)
+	exitOnErr("获取小时线失败", err)
+
 	daily, err := client.GetKlines(normalizedSymbol, "1d", dailyLimit)
 	exitOnErr("获取日线失败", err)
 
@@ -52,7 +56,7 @@ func main() {
 
 	indicators := calculateWeeklyIndicatorSeries(weeklyRaw, len(weekly))
 
-	report := buildReport(normalizedSymbol, daily, weekly, monthly, indicators)
+	report := buildReport(normalizedSymbol, hourly, daily, weekly, monthly, indicators)
 	if err := os.WriteFile(*outPath, []byte(report), 0o644); err != nil {
 		log.Fatalf("写入文件失败: %v", err)
 	}
@@ -82,7 +86,7 @@ func calculateWeeklyIndicatorSeries(allKlines []market.Kline, outputCount int) w
 	}
 }
 
-func buildReport(symbol string, daily, weekly, monthly []market.Kline, indi weeklyIndicatorSeries) string {
+func buildReport(symbol string, hourly, daily, weekly, monthly []market.Kline, indi weeklyIndicatorSeries) string {
 	var sb strings.Builder
 	now := time.Now().In(time.FixedZone("UTC+8", 8*3600))
 
@@ -92,7 +96,9 @@ func buildReport(symbol string, daily, weekly, monthly []market.Kline, indi week
 	sb.WriteString(formatWeeklyIndicators(weekly, indi))
 	sb.WriteString("\n")
 
-	sb.WriteString("=== 最近20条日线 ===\n")
+	sb.WriteString("=== 最近60条小时线 ===\n")
+	sb.WriteString(formatKlinesWithTime(hourly))
+	sb.WriteString("\n=== 最近20条日线 ===\n")
 	sb.WriteString(formatKlines(daily))
 	sb.WriteString("\n=== 最近20条周线 ===\n")
 	sb.WriteString(formatKlines(weekly))
@@ -132,6 +138,25 @@ func formatKlines(klines []market.Kline) string {
 			"[%02d] %s | O: %.4f H: %.4f L: %.4f C: %.4f V: %.4f\n",
 			idx+1,
 			openTime.Format("2006-01-02"),
+			k.Open,
+			k.High,
+			k.Low,
+			k.Close,
+			k.Volume,
+		))
+	}
+	return sb.String()
+}
+
+func formatKlinesWithTime(klines []market.Kline) string {
+	var sb strings.Builder
+	location := time.FixedZone("UTC+8", 8*3600)
+	for idx, k := range klines {
+		openTime := time.UnixMilli(k.OpenTime).In(location)
+		sb.WriteString(fmt.Sprintf(
+			"[%02d] %s | O: %.4f H: %.4f L: %.4f C: %.4f V: %.4f\n",
+			idx+1,
+			openTime.Format("2006-01-02 15:04"),
 			k.Open,
 			k.High,
 			k.Low,
