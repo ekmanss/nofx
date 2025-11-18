@@ -420,36 +420,69 @@ func (at *AutoTrader) runCycle() error {
 		return nil
 	}
 
-	// 2. 检查是否已有持仓，如果有则跳过本轮决策
+	// 2. 构建候选币种集合，用于判断是否需要因持仓而跳过
+	candidateSymbols := map[string]struct{}{}
+	hasCandidateFilter := false
+	if coins, err := at.getCandidateCoins(); err != nil {
+		log.Printf("⚠️ 获取候选币种失败，无法基于候选币种过滤持仓: %v", err)
+	} else {
+		candidateSymbols = make(map[string]struct{}, len(coins))
+		for _, coin := range coins {
+			if coin.Symbol == "" {
+				continue
+			}
+			candidateSymbols[strings.ToUpper(strings.TrimSpace(coin.Symbol))] = struct{}{}
+		}
+		hasCandidateFilter = true
+	}
+
+	// 3. 检查是否已有持仓，如果候选币种中已有持仓则跳过本轮决策
 	positions, err := at.trader.GetPositions()
 	if err == nil {
-		hasPosition := false
+		shouldSkip := false
+		blockingSymbol := ""
+		foundNonCandidatePosition := false
 		for _, pos := range positions {
-			quantity := pos["positionAmt"].(float64)
-			if quantity != 0 {
-				hasPosition = true
-				break
+			quantity, ok := pos["positionAmt"].(float64)
+			if !ok || quantity == 0 {
+				continue
+			}
+
+			symbol, _ := pos["symbol"].(string)
+			if hasCandidateFilter {
+				if _, ok := candidateSymbols[strings.ToUpper(symbol)]; ok {
+					shouldSkip = true
+					blockingSymbol = symbol
+					break
+				}
+				foundNonCandidatePosition = true
+			} else if quantity != 0 {
+				foundNonCandidatePosition = true
 			}
 		}
-		if hasPosition {
-			log.Printf("⏭️  检测到已有持仓，跳过本轮AI决策")
+
+		if shouldSkip {
+			log.Printf("⏭️  检测到候选币种 %s 已有持仓，跳过本轮AI决策", blockingSymbol)
 			record.Success = true
-			record.ErrorMessage = "已有持仓，跳过决策"
-			//at.decisionLogger.LogDecision(record)
+			record.ErrorMessage = fmt.Sprintf("%s 已有持仓，跳过决策", blockingSymbol)
 			return nil
+		}
+
+		if foundNonCandidatePosition && hasCandidateFilter {
+			log.Printf("ℹ️ 检测到已有持仓但不在候选币种中，继续执行AI决策")
 		}
 	} else {
 		log.Printf("⚠️  检查持仓失败: %v，继续执行", err)
 	}
 
-	// 2. 重置日盈亏（每天重置）
+	// 4. 重置日盈亏（每天重置）
 	if time.Since(at.lastResetTime) > 24*time.Hour {
 		at.dailyPnL = 0
 		at.lastResetTime = time.Now()
 		log.Println("📅 日盈亏已重置")
 	}
 
-	// 4. 收集交易上下文
+	// 5. 收集交易上下文
 	ctx, err := at.buildTradingContext()
 	if err != nil {
 		record.Success = false
