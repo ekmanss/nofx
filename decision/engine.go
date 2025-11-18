@@ -413,7 +413,7 @@ func buildUserPrompt(ctx *Context) string {
 		ctx.Account.PositionCount))
 
 	// 持仓（完整市场数据）
-	if len(ctx.Positions) > 0 {
+	if false {
 		sb.WriteString("## 当前持仓\n")
 		for i, pos := range ctx.Positions {
 			// 计算持仓时长
