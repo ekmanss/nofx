@@ -30,6 +30,8 @@ type AssetProfile struct {
 	Ranges []TrailingRange
 	// RegimeAdjustment 控制在不同波动率环境下ATR倍数的调整方式。
 	RegimeAdjustment RegimeAdjustment
+	// ATRPeriod 为该资产分类单独配置ATR计算周期（>0时生效）。
+	ATRPeriod int
 	// PeakDrawdownLimit 峰值回撤所允许的最大比例（例如0.12代表12%）。
 	PeakDrawdownLimit float64
 	// MaxRLockAlpha 峰值R需要锁定的比例，用于限制最大浮盈回吐。
@@ -79,6 +81,7 @@ var defaultConfig = &Config{
 			MaxRLockAlpha:     0.55,
 		},
 		"trend_alt": {
+			ATRPeriod: 7,
 			Ranges: []TrailingRange{
 				{MaxR: 3, LockRatio: 0.40, BaseATRMultiplier: 3.0, Label: "阶段2：ALT 早期锁盈 (1-3R)"},
 				{MaxR: 6, LockRatio: 0.60, BaseATRMultiplier: 2.6, Label: "阶段3：ALT 中段锁盈 (3-6R)"},
@@ -197,6 +200,16 @@ func (c *Config) trailingParams(assetClass string, currentR float64) (float64, f
 	}
 	last := profile.Ranges[len(profile.Ranges)-1]
 	return last.LockRatio, last.BaseATRMultiplier, last.Label
+}
+
+func (c *Config) atrPeriodForClass(assetClass string) int {
+	if c == nil {
+		return 0
+	}
+	if profile := c.assetProfile(assetClass); profile != nil && profile.ATRPeriod > 0 {
+		return profile.ATRPeriod
+	}
+	return c.ATRPeriod
 }
 
 func (c *Config) adjustATRMultiplier(assetClass string, base, regimeVol float64) float64 {

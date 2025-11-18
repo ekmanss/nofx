@@ -14,7 +14,7 @@ type RiskSnapshot struct {
 }
 
 // ATRFetcher allows tests to provide deterministic ATR data.
-type ATRFetcher func(symbol string) (float64, error)
+type ATRFetcher func(symbol string, period int) (float64, error)
 
 // ATRTrailingCalculator encapsulates the ATR-based trailing stop rules.
 type ATRTrailingCalculator struct {
@@ -32,10 +32,7 @@ func NewATRTrailingCalculator(fetcher ATRFetcher) *ATRTrailingCalculator {
 func NewATRTrailingCalculatorWithConfig(fetcher ATRFetcher, cfg *Config) *ATRTrailingCalculator {
 	resolved := resolveConfig(cfg)
 	if fetcher == nil {
-		period := resolved.ATRPeriod
-		fetcher = func(symbol string) (float64, error) {
-			return fetchOneHourATR(symbol, period)
-		}
+		fetcher = fetchOneHourATR
 	}
 	return &ATRTrailingCalculator{fetchATR: fetcher, config: resolved}
 }
@@ -74,16 +71,18 @@ func (c *ATRTrailingCalculator) Calculate(
 		return baseStop, fmt.Sprintf("阶段0：<%.2fR，保持止损 %.4f", c.config.PhaseStartBreakeven, baseStop), nil
 	}
 
-	atr, err := c.fetchATR(pos.Symbol)
+	assetClass := c.config.assetClassForSymbol(pos.Symbol)
+	atrPeriod := c.config.atrPeriodForClass(assetClass)
+
+	atr, err := c.fetchATR(pos.Symbol, atrPeriod)
 	if err != nil {
 		return 0, "", err
 	}
 	if atr <= 0 {
-		return 0, "", fmt.Errorf("1H ATR14 数据不可用")
+		return 0, "", fmt.Errorf("1H ATR%d 数据不可用", atrPeriod)
 	}
 
 	regimeVol := atr / mark
-	assetClass := c.config.assetClassForSymbol(pos.Symbol)
 
 	if pos.Side == "long" {
 		return calculateDynamicStopLong(
@@ -94,6 +93,7 @@ func (c *ATRTrailingCalculator) Calculate(
 			currentR,
 			atr,
 			regimeVol,
+			atrPeriod,
 			assetClass,
 			c.config,
 		)
@@ -107,6 +107,7 @@ func (c *ATRTrailingCalculator) Calculate(
 		currentR,
 		atr,
 		regimeVol,
+		atrPeriod,
 		assetClass,
 		c.config,
 	)
@@ -123,6 +124,7 @@ func calculateDynamicStopLong(
 	entry, mark, baseStop float64,
 	risk *RiskSnapshot,
 	currentR, atr, regimeVol float64,
+	atrPeriod int,
 	assetClass string,
 	cfg *Config,
 ) (float64, string, error) {
@@ -180,8 +182,8 @@ func calculateDynamicStopLong(
 	}
 
 	reason := fmt.Sprintf(
-		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,14)=%.4f×%.2f，Drawdown限=%.2f%% → S1=%.4f，S2=%.4f，S3=%.4f，最终止损=%.4f%s",
-		label, regimeVol, lockedR, risk.MaxR, alphaLock, atr, atrMult, drawdownLimit*100, s1, s2, s3, newStop, suffix,
+		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f，Drawdown限=%.2f%% → S1=%.4f，S2=%.4f，S3=%.4f，最终止损=%.4f%s",
+		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, drawdownLimit*100, s1, s2, s3, newStop, suffix,
 	)
 	return newStop, reason, nil
 }
@@ -190,6 +192,7 @@ func calculateDynamicStopShort(
 	entry, mark, baseStop float64,
 	risk *RiskSnapshot,
 	currentR, atr, regimeVol float64,
+	atrPeriod int,
 	assetClass string,
 	cfg *Config,
 ) (float64, string, error) {
@@ -247,8 +250,8 @@ func calculateDynamicStopShort(
 	}
 
 	reason := fmt.Sprintf(
-		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,14)=%.4f×%.2f，Drawdown限=%.2f%% → S1=%.4f，S2=%.4f，S3=%.4f，最终止损=%.4f%s",
-		label, regimeVol, lockedR, risk.MaxR, alphaLock, atr, atrMult, drawdownLimit*100, s1, s2, s3, newStop, suffix,
+		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f，Drawdown限=%.2f%% → S1=%.4f，S2=%.4f，S3=%.4f，最终止损=%.4f%s",
+		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, drawdownLimit*100, s1, s2, s3, newStop, suffix,
 	)
 	return newStop, reason, nil
 }
@@ -273,12 +276,12 @@ func fetchOneHourATR(symbol string, period int) (float64, error) {
 		return 0, fmt.Errorf("获取市场数据失败: %w", err)
 	}
 	if data == nil || len(data.Klines1h) == 0 {
-		return 0, fmt.Errorf("1H ATR14 数据不可用")
+		return 0, fmt.Errorf("1H ATR%d 数据不可用", period)
 	}
 
 	atr := calculateATRFromKlines(data.Klines1h, period)
 	if atr <= 0 {
-		return 0, fmt.Errorf("1H ATR14 数据不可用")
+		return 0, fmt.Errorf("1H ATR%d 数据不可用", period)
 	}
 	return atr, nil
 }
