@@ -3,6 +3,7 @@ package trailingstop
 import (
 	"strings"
 	"sync"
+	"time"
 )
 
 type riskStageInfo struct {
@@ -13,6 +14,8 @@ type riskStageInfo struct {
 
 	LastRecordedStop float64
 	HasRecordedStop  bool
+
+	OpenedAt time.Time
 }
 
 type riskStateRemoval struct {
@@ -34,8 +37,12 @@ func (r *riskRegistry) registerInitialStop(symbol, side string, stop float64) st
 		return ""
 	}
 	key := composePositionKey(symbol, side)
+	now := time.Now()
 	r.mu.Lock()
-	r.states[key] = &riskStageInfo{InitialStop: stop}
+	r.states[key] = &riskStageInfo{
+		InitialStop: stop,
+		OpenedAt:    now,
+	}
 	r.mu.Unlock()
 	return key
 }
@@ -80,6 +87,10 @@ func (r *riskRegistry) updatePeakAndMaxR(pos *Snapshot, key string, currentR flo
 	info, ok := r.states[key]
 	if !ok || info == nil {
 		return
+	}
+
+	if info.OpenedAt.IsZero() {
+		info.OpenedAt = time.Now()
 	}
 
 	price := pos.MarkPrice

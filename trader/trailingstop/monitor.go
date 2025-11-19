@@ -277,8 +277,9 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *Snapshot, index, tota
 		InitialStop: riskInfo.InitialStop,
 		PeakPrice:   riskInfo.PeakPrice,
 		MaxR:        riskInfo.MaxR,
+		OpenedAt:    riskInfo.OpenedAt,
 	}
-	newStopLoss, reason, err := m.atrCalculator.Calculate(pos, riskSnapshot, prevStop, hasPrevStop)
+	newStopLoss, forceExit, reason, err := m.atrCalculator.Calculate(pos, riskSnapshot, prevStop, hasPrevStop)
 	if err != nil {
 		log.Printf("      ⚠️ 计算动态止损失败: %v", err)
 		return false, true
@@ -290,6 +291,16 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *Snapshot, index, tota
 	}
 
 	log.Printf("      ✏️  %s", reason)
+
+	if forceExit {
+		log.Printf("      🚨 T+2 规则触发，直接执行市价平仓")
+		if err := m.executeMarketClose(pos.Symbol, pos.Side, pos.MarkPrice); err != nil {
+			log.Printf("      ❌ 强制平仓失败: %v", err)
+			return false, false
+		}
+		log.Printf("      ✅ 强制平仓完成")
+		return true, false
+	}
 
 	log.Printf("      🔍 验证止损价格有效性...")
 	allowInitialStop := !hasPrevStop && floatsAlmostEqual(newStopLoss, riskInfo.InitialStop)
