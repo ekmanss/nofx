@@ -346,7 +346,7 @@ func buildSystemPrompt(accountEquity float64, btcEthLeverage, altcoinLeverage in
 	riskPercent := riskPerTradePercent * 100
 
 	sb.WriteString("# 硬约束（风险控制）\n\n")
-	sb.WriteString("1. 风险回报比: 必须 ≥ 1:3（至少赚 3R，即风险的 3 倍）\n")
+	sb.WriteString("1. 风险回报比符合要求\n")
 	sb.WriteString(fmt.Sprintf("2. 固定风险（1R 模型）: 单笔最大亏损 = 1R = 账户权益的 %.0f%% ≈ %.2f USDT\n", riskPercent, riskPerTrade))
 
 	sb.WriteString("3. 仓位计算规则（必须严格执行）:\n")
