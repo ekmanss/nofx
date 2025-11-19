@@ -481,7 +481,7 @@ func buildUserPrompt(ctx *Context) string {
 		var perfData PerformanceData
 		if jsonData, err := json.Marshal(ctx.Performance); err == nil {
 			if err := json.Unmarshal(jsonData, &perfData); err == nil {
-				sb.WriteString(fmt.Sprintf("## 📊 夏普比率: %.2f\n\n", 0.1))
+				sb.WriteString(fmt.Sprintf("## 📊 夏普比率: %.2f\n\n", -0.1))
 			}
 		}
 	}
