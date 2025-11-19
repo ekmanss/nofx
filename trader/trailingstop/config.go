@@ -36,6 +36,8 @@ type AssetProfile struct {
 	PeakDrawdownLimit float64
 	// MaxRLockAlpha 峰值R需要锁定的比例，用于限制最大浮盈回吐。
 	MaxRLockAlpha float64
+	// PhaseStartBreakeven 触发保本阶段所需的最小R倍数（>0时覆盖全局配置）。
+	PhaseStartBreakeven float64
 }
 
 // TrailingRange expresses how much R to lock and what ATR multiplier to use for a given band.
@@ -106,20 +108,21 @@ var defaultConfig = &Config{
 			MaxRLockAlpha: 0.60,
 		},
 		"trend_alt": {
-			ATRPeriod: 7, // 保持7，反应快是好事
+			ATRPeriod:           7,   // 保持7，反应快是好事
+			PhaseStartBreakeven: 0.8, // 山寨币更早启动追踪（0.8R就开始），避免回吐太多利润
 			Ranges: []TrailingRange{
 				// 阶段1：快速保本。只要赚了1.5R，立刻把止损提到入场价上方（锁0.1R），防止白玩。
 				{MaxR: 1.5, LockRatio: 0.1, BaseATRMultiplier: 3.5, Label: "⚡️ 阶段1：快速保本"},
 				// 阶段2：主要利润段。赚到3R时，必须锁住一半利润。ATR系数收紧到 2.5。
 				{MaxR: 3.0, LockRatio: 0.50, BaseATRMultiplier: 2.5, Label: "📈 阶段2：锁定半程"},
-				// 阶段3：加速段。如果是“疯牛”行情，赚到5R以上，紧紧贴着价格走，ATR降到 1.8。
+				// 阶段3：加速段。如果是"疯牛"行情，赚到5R以上，紧紧贴着价格走，ATR降到 1.8。
 				{MaxR: 5.0, LockRatio: 0.70, BaseATRMultiplier: 1.8, Label: "🚀 阶段3：加速冲刺"},
 				// 阶段4：极值。防止大瀑布。
 				{MaxR: 0, LockRatio: 0.85, BaseATRMultiplier: 1.5, Label: "💰 阶段4：落袋为安"},
 			},
 			// 波动率调整：对于热门币，波动率低时反而要敏感（0.8），波动率极大时适当放宽（1.2）防止被插针洗盘
 			RegimeAdjustment: RegimeAdjustment{LowThreshold: 0.02, LowMultiplier: 0.8, HighThreshold: 0.08, HighMultiplier: 1.2},
-			// 2%风险意味着不能容忍18%的回撤，这里建议改为针对“最高价的回撤”
+			// 2%风险意味着不能容忍18%的回撤，这里建议改为针对"最高价的回撤"
 			PeakDrawdownLimit: 0.05, // 热门币从最高点回撤5%就走人，不要留恋
 			MaxRLockAlpha:     0.60,
 		},
@@ -257,4 +260,14 @@ func (c *Config) adjustATRMultiplier(assetClass string, base, regimeVol float64)
 		return base * adj.HighMultiplier
 	}
 	return base
+}
+
+func (c *Config) phaseStartBreakevenForClass(assetClass string) float64 {
+	if c == nil {
+		return 0
+	}
+	if profile := c.assetProfile(assetClass); profile != nil && profile.PhaseStartBreakeven > 0 {
+		return profile.PhaseStartBreakeven
+	}
+	return c.PhaseStartBreakeven
 }

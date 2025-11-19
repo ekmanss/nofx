@@ -67,11 +67,12 @@ func (c *ATRTrailingCalculator) Calculate(
 		baseStop = prevStop
 	}
 
-	if currentR < c.config.PhaseStartBreakeven {
-		return baseStop, fmt.Sprintf("阶段0：<%.2fR，保持止损 %.4f", c.config.PhaseStartBreakeven, baseStop), nil
+	assetClass := c.config.assetClassForSymbol(pos.Symbol)
+	phaseStartBreakeven := c.config.phaseStartBreakevenForClass(assetClass)
+	if currentR < phaseStartBreakeven {
+		return baseStop, fmt.Sprintf("阶段0：<%.2fR，保持止损 %.4f", phaseStartBreakeven, baseStop), nil
 	}
 
-	assetClass := c.config.assetClassForSymbol(pos.Symbol)
 	atrPeriod := c.config.atrPeriodForClass(assetClass)
 
 	atr, err := c.fetchATR(pos.Symbol, atrPeriod)
