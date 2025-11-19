@@ -71,25 +71,57 @@ var defaultConfig = &Config{
 	},
 	AssetProfiles: map[string]*AssetProfile{
 		"btc": {
+			// 1H级别，BTC不需要像山寨那样看7根K线，14根（默认）稍微滞后，建议改为10
+			ATRPeriod: 10,
+
 			Ranges: []TrailingRange{
-				{MaxR: 2, LockRatio: 0.30, BaseATRMultiplier: 2.5, Label: "阶段2：BTC 早期锁盈 (1-2R)"},
-				{MaxR: 4, LockRatio: 0.45, BaseATRMultiplier: 2.1, Label: "阶段3：BTC 中段跟随 (2-4R)"},
-				{MaxR: 0, LockRatio: 0.65, BaseATRMultiplier: 1.9, Label: "阶段4：BTC 大波段 (4R+)"},
+				// 【阶段1：生存期】 0 - 1.2R
+				// 只要浮盈超过 1R，立刻把止损提到入场价上方一点点（LockRatio 0.1）。
+				// ATR倍数给 3.0，容忍 BTC 的初期磨蹭和假突破。
+				{MaxR: 1.2, LockRatio: 0.10, BaseATRMultiplier: 3.0, Label: "🛡️ 阶段1：BTC 成本保护"},
+
+				// 【阶段2：利润收割期】 1.2R - 2.5R
+				// 这是你 1-2 小时持仓最容易达到的区间。
+				// 必须激进锁利！到达 2.5R 时，至少要锁住 60% 的利润。
+				// ATR 降为 2.0，贴紧价格走。
+				{MaxR: 2.5, LockRatio: 0.60, BaseATRMultiplier: 2.0, Label: "💰 阶段2：BTC 主升浪锁盈"},
+
+				// 【阶段3：意外之喜】 > 2.5R
+				// 如果 2小时内 BTC 拉了超过 2.5R，说明遇到大事件了。
+				// 这种行情通常不可持续，用极紧的 1.5 ATR 跟踪，稍有风吹草动就离场。
+				{MaxR: 0, LockRatio: 0.80, BaseATRMultiplier: 1.5, Label: "🚀 阶段3：BTC 加速冲顶"},
 			},
-			RegimeAdjustment:  RegimeAdjustment{LowThreshold: 0.004, LowMultiplier: 0.90, HighThreshold: 0.010, HighMultiplier: 1.2},
-			PeakDrawdownLimit: 0.10,
-			MaxRLockAlpha:     0.55,
+
+			// 【波动率适应】
+			// BTC 低波动时（横盘震荡）往往是在蓄势，不要随意收紧止损，保持 1.0。
+			// 高波动时（插针乱飞），稍微放大 ATR 倍数（1.1），防止被“天地针”扫地出门。
+			RegimeAdjustment: RegimeAdjustment{LowThreshold: 0.005, LowMultiplier: 1.0, HighThreshold: 0.020, HighMultiplier: 1.1},
+
+			// 【回撤限制】
+			// 既然只拿2小时，不要看价格回撤了，主要靠 ATR 止盈。
+			// 这里设个保底：如果从最高点回撤 3%（对于1H级别很大了），强制离场。
+			PeakDrawdownLimit: 0.03,
+
+			// 限制最大回吐 R 值，只允许回吐 40% 的 R
+			MaxRLockAlpha: 0.60,
 		},
 		"trend_alt": {
-			ATRPeriod: 7,
+			ATRPeriod: 7, // 保持7，反应快是好事
 			Ranges: []TrailingRange{
-				{MaxR: 3, LockRatio: 0.40, BaseATRMultiplier: 3.0, Label: "阶段2：ALT 早期锁盈 (1-3R)"},
-				{MaxR: 6, LockRatio: 0.60, BaseATRMultiplier: 2.6, Label: "阶段3：ALT 中段锁盈 (3-6R)"},
-				{MaxR: 0, LockRatio: 0.75, BaseATRMultiplier: 2.1, Label: "阶段4：ALT 大波段 (6R+)"},
+				// 阶段1：快速保本。只要赚了1.5R，立刻把止损提到入场价上方（锁0.1R），防止白玩。
+				{MaxR: 1.5, LockRatio: 0.1, BaseATRMultiplier: 3.5, Label: "⚡️ 阶段1：快速保本"},
+				// 阶段2：主要利润段。赚到3R时，必须锁住一半利润。ATR系数收紧到 2.5。
+				{MaxR: 3.0, LockRatio: 0.50, BaseATRMultiplier: 2.5, Label: "📈 阶段2：锁定半程"},
+				// 阶段3：加速段。如果是“疯牛”行情，赚到5R以上，紧紧贴着价格走，ATR降到 1.8。
+				{MaxR: 5.0, LockRatio: 0.70, BaseATRMultiplier: 1.8, Label: "🚀 阶段3：加速冲刺"},
+				// 阶段4：极值。防止大瀑布。
+				{MaxR: 0, LockRatio: 0.85, BaseATRMultiplier: 1.5, Label: "💰 阶段4：落袋为安"},
 			},
-			RegimeAdjustment:  RegimeAdjustment{LowThreshold: 0.015, LowMultiplier: 0.90, HighThreshold: 0.060, HighMultiplier: 1.35},
-			PeakDrawdownLimit: 0.18,
-			MaxRLockAlpha:     0.50,
+			// 波动率调整：对于热门币，波动率低时反而要敏感（0.8），波动率极大时适当放宽（1.2）防止被插针洗盘
+			RegimeAdjustment: RegimeAdjustment{LowThreshold: 0.02, LowMultiplier: 0.8, HighThreshold: 0.08, HighMultiplier: 1.2},
+			// 2%风险意味着不能容忍18%的回撤，这里建议改为针对“最高价的回撤”
+			PeakDrawdownLimit: 0.05, // 热门币从最高点回撤5%就走人，不要留恋
+			MaxRLockAlpha:     0.60,
 		},
 	},
 }
