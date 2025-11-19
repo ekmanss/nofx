@@ -162,19 +162,7 @@ func calculateDynamicStopLong(
 	}
 	s2 := peak - atr*atrMult
 
-	s3 := baseStop
-	drawdownLimit := 0.0
-	if profile != nil && profile.PeakDrawdownLimit > 0 {
-		drawdownLimit = profile.PeakDrawdownLimit
-		drawdownStop := peak * (1 - drawdownLimit)
-		if drawdownStop < entry {
-			drawdownStop = entry
-		}
-		s3 = drawdownStop
-	}
-
 	candidate := math.Max(baseStop, math.Max(s1, s2))
-	candidate = math.Max(candidate, s3)
 
 	newStop := tightenStopLong(baseStop, candidate)
 	suffix := ""
@@ -183,8 +171,8 @@ func calculateDynamicStopLong(
 	}
 
 	reason := fmt.Sprintf(
-		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f，Drawdown限=%.2f%% → S1=%.4f，S2=%.4f，S3=%.4f，最终止损=%.4f%s",
-		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, drawdownLimit*100, s1, s2, s3, newStop, suffix,
+		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f → S1=%.4f，S2=%.4f，最终止损=%.4f%s",
+		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, s1, s2, newStop, suffix,
 	)
 	return newStop, reason, nil
 }
@@ -230,19 +218,7 @@ func calculateDynamicStopShort(
 	}
 	s2 := peak + atr*atrMult
 
-	s3 := baseStop
-	drawdownLimit := 0.0
-	if profile != nil && profile.PeakDrawdownLimit > 0 {
-		drawdownLimit = profile.PeakDrawdownLimit
-		drawdownStop := peak * (1 + drawdownLimit)
-		if drawdownStop > entry {
-			drawdownStop = entry
-		}
-		s3 = drawdownStop
-	}
-
 	candidate := math.Min(baseStop, math.Min(s1, s2))
-	candidate = math.Min(candidate, s3)
 
 	newStop := tightenStopShort(baseStop, candidate)
 	suffix := ""
@@ -251,8 +227,8 @@ func calculateDynamicStopShort(
 	}
 
 	reason := fmt.Sprintf(
-		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f，Drawdown限=%.2f%% → S1=%.4f，S2=%.4f，S3=%.4f，最终止损=%.4f%s",
-		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, drawdownLimit*100, s1, s2, s3, newStop, suffix,
+		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f → S1=%.4f，S2=%.4f，最终止损=%.4f%s",
+		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, s1, s2, newStop, suffix,
 	)
 	return newStop, reason, nil
 }

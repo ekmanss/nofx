@@ -32,8 +32,6 @@ type AssetProfile struct {
 	RegimeAdjustment RegimeAdjustment
 	// ATRPeriod 为该资产分类单独配置ATR计算周期（>0时生效）。
 	ATRPeriod int
-	// PeakDrawdownLimit 峰值回撤所允许的最大比例（例如0.12代表12%）。
-	PeakDrawdownLimit float64
 	// MaxRLockAlpha 峰值R需要锁定的比例，用于限制最大浮盈回吐。
 	MaxRLockAlpha float64
 	// PhaseStartBreakeven 触发保本阶段所需的最小R倍数（>0时覆盖全局配置）。
@@ -100,10 +98,6 @@ var defaultConfig = &Config{
 			RegimeAdjustment: RegimeAdjustment{LowThreshold: 0.005, LowMultiplier: 1.0, HighThreshold: 0.020, HighMultiplier: 1.1},
 
 			// 【回撤限制】
-			// 既然只拿2小时，不要看价格回撤了，主要靠 ATR 止盈。
-			// 这里设个保底：如果从最高点回撤 3%（对于1H级别很大了），强制离场。
-			PeakDrawdownLimit: 0.03,
-
 			// 限制最大回吐 R 值，只允许回吐 40% 的 R
 			MaxRLockAlpha: 0.60,
 		},
@@ -122,9 +116,7 @@ var defaultConfig = &Config{
 			},
 			// 波动率调整：对于热门币，波动率低时反而要敏感（0.8），波动率极大时适当放宽（1.2）防止被插针洗盘
 			RegimeAdjustment: RegimeAdjustment{LowThreshold: 0.02, LowMultiplier: 0.8, HighThreshold: 0.08, HighMultiplier: 1.2},
-			// 2%风险意味着不能容忍18%的回撤，这里建议改为针对"最高价的回撤"
-			PeakDrawdownLimit: 0.05, // 热门币从最高点回撤5%就走人，不要留恋
-			MaxRLockAlpha:     0.60,
+			MaxRLockAlpha:    0.60,
 		},
 	},
 }
