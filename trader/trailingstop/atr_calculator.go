@@ -123,8 +123,6 @@ func currentRMultiple(side string, entry, mark, riskDistance float64) float64 {
 	return (entry - mark) / riskDistance
 }
 
-const tPlusTwoDuration = 2 * time.Hour
-
 func calculateDynamicStopLong(
 	entry, mark, baseStop float64,
 	risk *RiskSnapshot,
@@ -146,7 +144,8 @@ func calculateDynamicStopLong(
 	lockRatio, baseATRMult, label := cfg.trailingParams(assetClass, currentR)
 	atrMult := cfg.adjustATRMultiplier(assetClass, baseATRMult, regimeVol)
 
-	lockedR := math.Max(currentR*lockRatio, 1)
+	minLockedR := cfg.minLockedRForClass(assetClass)
+	lockedR := math.Max(currentR*lockRatio, minLockedR)
 	var alphaLock float64
 	if profile != nil && profile.MaxRLockAlpha > 0 && risk.MaxR > 0 {
 		alphaLock = risk.MaxR * profile.MaxRLockAlpha
@@ -167,7 +166,9 @@ func calculateDynamicStopLong(
 	s2 := peak - atr*atrMult
 
 	stageOneMax := stageOneMaxR(profile)
-	tPlusTwoStop, tPlusTwoApplied := applyTPlusTwoLong(risk, stageOneMax, currentR, entry, riskDistance)
+	tPlusTwoLockRatio := cfg.tPlusTwoLockRatioForClass(assetClass)
+	tPlusTwoDuration := cfg.tPlusTwoDurationForClass(assetClass)
+	tPlusTwoStop, tPlusTwoApplied := applyTPlusTwoLong(risk, stageOneMax, currentR, entry, riskDistance, tPlusTwoLockRatio, tPlusTwoDuration)
 
 	candidate := math.Max(baseStop, math.Max(s1, s2))
 	forceExit := false
@@ -221,7 +222,8 @@ func calculateDynamicStopShort(
 	lockRatio, baseATRMult, label := cfg.trailingParams(assetClass, currentR)
 	atrMult := cfg.adjustATRMultiplier(assetClass, baseATRMult, regimeVol)
 
-	lockedR := math.Max(currentR*lockRatio, 1)
+	minLockedR := cfg.minLockedRForClass(assetClass)
+	lockedR := math.Max(currentR*lockRatio, minLockedR)
 	var alphaLock float64
 	if profile != nil && profile.MaxRLockAlpha > 0 && risk.MaxR > 0 {
 		alphaLock = risk.MaxR * profile.MaxRLockAlpha
@@ -242,7 +244,9 @@ func calculateDynamicStopShort(
 	s2 := peak + atr*atrMult
 
 	stageOneMax := stageOneMaxR(profile)
-	tPlusTwoStop, tPlusTwoApplied := applyTPlusTwoShort(risk, stageOneMax, currentR, entry, riskDistance)
+	tPlusTwoLockRatio := cfg.tPlusTwoLockRatioForClass(assetClass)
+	tPlusTwoDuration := cfg.tPlusTwoDurationForClass(assetClass)
+	tPlusTwoStop, tPlusTwoApplied := applyTPlusTwoShort(risk, stageOneMax, currentR, entry, riskDistance, tPlusTwoLockRatio, tPlusTwoDuration)
 
 	candidate := math.Min(baseStop, math.Min(s1, s2))
 	forceExit := false
@@ -286,11 +290,14 @@ func stageOneMaxR(profile *AssetProfile) float64 {
 	return maxR
 }
 
-func applyTPlusTwoLong(risk *RiskSnapshot, stageOneMax, currentR, entry, riskDistance float64) (float64, bool) {
-	if !shouldApplyTPlusTwo(risk, stageOneMax, currentR) {
+func applyTPlusTwoLong(risk *RiskSnapshot, stageOneMax, currentR, entry, riskDistance float64, lockRatio float64, duration time.Duration) (float64, bool) {
+	if lockRatio <= 0 || duration <= 0 {
 		return 0, false
 	}
-	targetR := risk.MaxR * 0.5
+	if !shouldApplyTPlusTwo(risk, stageOneMax, currentR, duration) {
+		return 0, false
+	}
+	targetR := risk.MaxR * lockRatio
 	if targetR < 0 {
 		return entry, true
 	}
@@ -301,11 +308,14 @@ func applyTPlusTwoLong(risk *RiskSnapshot, stageOneMax, currentR, entry, riskDis
 	return stop, true
 }
 
-func applyTPlusTwoShort(risk *RiskSnapshot, stageOneMax, currentR, entry, riskDistance float64) (float64, bool) {
-	if !shouldApplyTPlusTwo(risk, stageOneMax, currentR) {
+func applyTPlusTwoShort(risk *RiskSnapshot, stageOneMax, currentR, entry, riskDistance float64, lockRatio float64, duration time.Duration) (float64, bool) {
+	if lockRatio <= 0 || duration <= 0 {
 		return 0, false
 	}
-	targetR := risk.MaxR * 0.5
+	if !shouldApplyTPlusTwo(risk, stageOneMax, currentR, duration) {
+		return 0, false
+	}
+	targetR := risk.MaxR * lockRatio
 	if targetR < 0 {
 		return entry, true
 	}
@@ -316,11 +326,14 @@ func applyTPlusTwoShort(risk *RiskSnapshot, stageOneMax, currentR, entry, riskDi
 	return stop, true
 }
 
-func shouldApplyTPlusTwo(risk *RiskSnapshot, stageOneMax, currentR float64) bool {
+func shouldApplyTPlusTwo(risk *RiskSnapshot, stageOneMax, currentR float64, duration time.Duration) bool {
 	if risk == nil {
 		return false
 	}
 	if risk.OpenedAt.IsZero() {
+		return false
+	}
+	if duration <= 0 {
 		return false
 	}
 	if stageOneMax <= 0 {
@@ -335,7 +348,7 @@ func shouldApplyTPlusTwo(risk *RiskSnapshot, stageOneMax, currentR float64) bool
 	if currentR >= stageOneMax {
 		return false
 	}
-	if time.Since(risk.OpenedAt) < tPlusTwoDuration {
+	if time.Since(risk.OpenedAt) < duration {
 		return false
 	}
 	return true

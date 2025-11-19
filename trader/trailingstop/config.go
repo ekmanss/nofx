@@ -1,6 +1,9 @@
 package trailingstop
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // Config captures all tunable parameters that govern how the trailing stop logic behaves.
 type Config struct {
@@ -14,6 +17,12 @@ type Config struct {
 	AssetClassRules []AssetClassRule
 	// AssetProfiles 为各资产分类提供分段参数与波动率调节配置。
 	AssetProfiles map[string]*AssetProfile
+	// DefaultMinLockedR 全局最小锁定R倍数（每个资产可以覆盖）。
+	DefaultMinLockedR float64
+	// TPlusTwoDuration T+2规则等待时间阈值。
+	TPlusTwoDuration time.Duration
+	// TPlusTwoLockRatio 达到T+2后需要锁定的峰值R比例。
+	TPlusTwoLockRatio float64
 }
 
 // AssetClassRule associates a symbol prefix with an asset class key.
@@ -36,6 +45,12 @@ type AssetProfile struct {
 	MaxRLockAlpha float64
 	// PhaseStartBreakeven 触发保本阶段所需的最小R倍数（>0时覆盖全局配置）。
 	PhaseStartBreakeven float64
+	// MinLockedR 最小锁定R倍数（确保止损至少回到该R值）。
+	MinLockedR float64
+	// TPlusTwoDuration 该资产T+2规则的等待时间。
+	TPlusTwoDuration time.Duration
+	// TPlusTwoLockRatio T+2触发时锁定的峰值R比例。
+	TPlusTwoLockRatio float64
 }
 
 // TrailingRange expresses how much R to lock and what ATR multiplier to use for a given band.
@@ -66,13 +81,19 @@ var defaultConfig = &Config{
 	ATRPeriod:           14,
 	PhaseStartBreakeven: 1.0,
 	DefaultAssetClass:   "trend_alt",
+	DefaultMinLockedR:   1.0,
+	TPlusTwoDuration:    2 * time.Hour,
+	TPlusTwoLockRatio:   0.5,
 	AssetClassRules: []AssetClassRule{
 		{Prefix: "BTC", Class: "btc"},
 	},
 	AssetProfiles: map[string]*AssetProfile{
 		"btc": {
 			// 1H级别，BTC不需要像山寨那样看7根K线，14根（默认）稍微滞后，建议改为10
-			ATRPeriod: 10,
+			ATRPeriod:         10,
+			MinLockedR:        1.0,
+			TPlusTwoDuration:  2 * time.Hour,
+			TPlusTwoLockRatio: 0.5,
 
 			Ranges: []TrailingRange{
 				// 【阶段1：生存期】 0 - 1.2R
@@ -104,6 +125,9 @@ var defaultConfig = &Config{
 		"trend_alt": {
 			ATRPeriod:           7,   // 保持7，反应快是好事
 			PhaseStartBreakeven: 0.8, // 山寨币更早启动追踪（0.8R就开始），避免回吐太多利润
+			MinLockedR:          1.0,
+			TPlusTwoDuration:    2 * time.Hour,
+			TPlusTwoLockRatio:   0.5,
 			Ranges: []TrailingRange{
 				// 阶段1：快速保本。只要赚了1.5R，立刻把止损提到入场价上方（锁0.1R），防止白玩。
 				{MaxR: 1.5, LockRatio: 0.1, BaseATRMultiplier: 3.5, Label: "⚡️ 阶段1：快速保本"},
@@ -137,6 +161,15 @@ func resolveConfig(cfg *Config) *Config {
 	}
 	if cfg.PhaseStartBreakeven > 0 {
 		base.PhaseStartBreakeven = cfg.PhaseStartBreakeven
+	}
+	if cfg.DefaultMinLockedR > 0 {
+		base.DefaultMinLockedR = cfg.DefaultMinLockedR
+	}
+	if cfg.TPlusTwoDuration > 0 {
+		base.TPlusTwoDuration = cfg.TPlusTwoDuration
+	}
+	if cfg.TPlusTwoLockRatio > 0 {
+		base.TPlusTwoLockRatio = cfg.TPlusTwoLockRatio
 	}
 	if cfg.DefaultAssetClass != "" {
 		base.DefaultAssetClass = cfg.DefaultAssetClass
@@ -262,4 +295,43 @@ func (c *Config) phaseStartBreakevenForClass(assetClass string) float64 {
 		return profile.PhaseStartBreakeven
 	}
 	return c.PhaseStartBreakeven
+}
+
+func (c *Config) minLockedRForClass(assetClass string) float64 {
+	if profile := c.assetProfile(assetClass); profile != nil && profile.MinLockedR > 0 {
+		return profile.MinLockedR
+	}
+	if c != nil && c.DefaultMinLockedR > 0 {
+		return c.DefaultMinLockedR
+	}
+	if defaultConfig != nil && defaultConfig.DefaultMinLockedR > 0 {
+		return defaultConfig.DefaultMinLockedR
+	}
+	return 0
+}
+
+func (c *Config) tPlusTwoLockRatioForClass(assetClass string) float64 {
+	if profile := c.assetProfile(assetClass); profile != nil && profile.TPlusTwoLockRatio > 0 {
+		return profile.TPlusTwoLockRatio
+	}
+	if c != nil && c.TPlusTwoLockRatio > 0 {
+		return c.TPlusTwoLockRatio
+	}
+	if defaultConfig != nil && defaultConfig.TPlusTwoLockRatio > 0 {
+		return defaultConfig.TPlusTwoLockRatio
+	}
+	return 0
+}
+
+func (c *Config) tPlusTwoDurationForClass(assetClass string) time.Duration {
+	if profile := c.assetProfile(assetClass); profile != nil && profile.TPlusTwoDuration > 0 {
+		return profile.TPlusTwoDuration
+	}
+	if c != nil && c.TPlusTwoDuration > 0 {
+		return c.TPlusTwoDuration
+	}
+	if defaultConfig != nil && defaultConfig.TPlusTwoDuration > 0 {
+		return defaultConfig.TPlusTwoDuration
+	}
+	return 0
 }
