@@ -1231,7 +1231,105 @@ func (t *AsterTrader) FormatQuantity(symbol string, quantity float64) (string, e
 	return fmt.Sprintf("%v", formatted), nil
 }
 
-// GetOpenOrders 暂未实现，返回占位错误
+// GetOpenOrders 获取当前未完成订单（symbol 为空则返回所有）
 func (t *AsterTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
-	return nil, fmt.Errorf("aster trader does not support GetOpenOrders")
+	params := map[string]interface{}{}
+	if trimmed := strings.TrimSpace(symbol); trimmed != "" {
+		params["symbol"] = trimmed
+	}
+
+	// Aster v3 首选，兼容性失败时回落到 v1
+	body, err := t.request("GET", "/fapi/v3/openOrders", params)
+	if err != nil {
+		body, err = t.request("GET", "/fapi/v1/openOrders", params)
+		if err != nil {
+			return nil, fmt.Errorf("获取未完成订单失败: %w", err)
+		}
+	}
+
+	var orders []map[string]interface{}
+	if err := json.Unmarshal(body, &orders); err != nil {
+		return nil, fmt.Errorf("解析未完成订单失败: %w", err)
+	}
+
+	toFloat := func(v interface{}) float64 {
+		switch val := v.(type) {
+		case float64:
+			return val
+		case string:
+			f, _ := strconv.ParseFloat(val, 64)
+			return f
+		default:
+			return 0
+		}
+	}
+
+	toInt64 := func(v interface{}) int64 {
+		switch val := v.(type) {
+		case float64:
+			return int64(val)
+		case string:
+			i, _ := strconv.ParseInt(val, 10, 64)
+			return i
+		default:
+			return 0
+		}
+	}
+
+	toBool := func(v interface{}) bool {
+		switch val := v.(type) {
+		case bool:
+			return val
+		case string:
+			b, _ := strconv.ParseBool(val)
+			return b
+		default:
+			return false
+		}
+	}
+
+	toString := func(v interface{}) string {
+		if v == nil {
+			return ""
+		}
+		return fmt.Sprintf("%v", v)
+	}
+
+	result := make([]map[string]interface{}, 0, len(orders))
+	for _, order := range orders {
+		if order == nil {
+			continue
+		}
+
+		orderMap := map[string]interface{}{
+			"orderId":       toInt64(order["orderId"]),
+			"symbol":        toString(order["symbol"]),
+			"clientOrderId": toString(order["clientOrderId"]),
+			"type":          toString(order["type"]),
+			"side":          toString(order["side"]),
+			"positionSide":  toString(order["positionSide"]),
+			"status":        toString(order["status"]),
+			"timeInForce":   toString(order["timeInForce"]),
+			"origType":      toString(order["origType"]),
+			"workingType":   toString(order["workingType"]),
+			"priceProtect":  toBool(order["priceProtect"]),
+			"reduceOnly":    toBool(order["reduceOnly"]),
+			"closePosition": toBool(order["closePosition"]),
+			"updateTime":    toInt64(order["updateTime"]),
+			"time":          toInt64(order["time"]),
+		}
+
+		orderMap["price"] = toFloat(order["price"])
+		orderMap["origQty"] = toFloat(order["origQty"])
+		orderMap["executedQty"] = toFloat(order["executedQty"])
+		orderMap["cumQuote"] = toFloat(order["cumQuote"])
+		orderMap["stopPrice"] = toFloat(order["stopPrice"])
+		orderMap["avgPrice"] = toFloat(order["avgPrice"])
+		orderMap["activatePrice"] = toFloat(order["activatePrice"])
+		orderMap["priceRate"] = toFloat(order["priceRate"])
+
+		result = append(result, orderMap)
+	}
+
+	return result, nil
 }
