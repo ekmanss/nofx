@@ -245,6 +245,12 @@ func (m *TrailingStopMonitor) processPositionSnapshot(pos *Snapshot, index, tota
 		riskInfo = snapshot
 	}
 
+	holdInfo := "未知"
+	if !riskInfo.OpenedAt.IsZero() {
+		holdInfo = fmt.Sprintf("%s（开仓 %s）", formatDurationCompact(time.Since(riskInfo.OpenedAt)), riskInfo.OpenedAt.In(time.Local).Format("01-02 15:04"))
+	}
+	log.Printf("      ⏳ 持仓时长: %s", holdInfo)
+
 	log.Printf("      🧮 初始止损: %.4f | 1R距离: %.4f | 当前: %.2fR | 峰值R: %.2fR",
 		riskInfo.InitialStop, riskDistance, currentR, riskInfo.MaxR)
 
@@ -635,4 +641,33 @@ func (m *TrailingStopMonitor) ClearPosition(symbol, side string) {
 	if initialStop, cleared := m.riskRegistry.clear(symbol, side); cleared {
 		log.Printf("🧹 [追踪止损] 清除 %s 风险分段缓存 (初始止损: %.4f)", key, initialStop)
 	}
+}
+
+// formatDurationCompact 把持仓时长格式化为紧凑可读的字符串
+func formatDurationCompact(d time.Duration) string {
+	if d < 0 {
+		d = -d
+	}
+	if d == 0 {
+		return "0s"
+	}
+
+	days := d / (24 * time.Hour)
+	d -= days * 24 * time.Hour
+	hours := d / time.Hour
+	d -= hours * time.Hour
+	minutes := d / time.Minute
+	d -= minutes * time.Minute
+	seconds := d / time.Second
+
+	if days > 0 {
+		return fmt.Sprintf("%dd%02dh", days, hours)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh%02dm", hours, minutes)
+	}
+	if minutes > 0 {
+		return fmt.Sprintf("%dm%02ds", minutes, seconds)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }

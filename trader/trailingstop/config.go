@@ -95,7 +95,7 @@ var defaultConfig = &Config{
 	// T+2 规则：
 	// 预期持仓 1–2 小时，如果超过 3 小时还没结束，说明行情拖沓。
 	// 这时候强制锁住大部分最高浮盈，准备离场。
-	TPlusTwoDuration:  3 * time.Hour,
+	TPlusTwoDuration:  2 * time.Hour,
 	TPlusTwoLockRatio: 0.8, // 全局默认锁峰值 R 的 80%，具体资产可以覆盖
 
 	// 简单的资产分类规则
@@ -160,7 +160,7 @@ var defaultConfig = &Config{
 
 			// ✅ 单独覆盖 T+2：同样是 3 小时，但只锁 60% 峰值 R，
 			// 给山寨在后半段再冲一波的空间。
-			TPlusTwoDuration:  3 * time.Hour,
+			TPlusTwoDuration:  2 * time.Hour,
 			TPlusTwoLockRatio: 0.6,
 
 			Ranges: []TrailingRange{

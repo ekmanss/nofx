@@ -72,6 +72,41 @@ func (c *ATRTrailingCalculator) Calculate(
 	assetClass := c.config.assetClassForSymbol(pos.Symbol)
 	phaseStartBreakeven := c.config.phaseStartBreakevenForClass(assetClass)
 	if currentR < phaseStartBreakeven {
+		// 阶段0 也允许 T+2：持仓拖延太久时，直接按峰值R强制锁利
+		stageOneMax := stageOneMaxR(c.config.assetProfile(assetClass))
+		tPlusTwoLockRatio := c.config.tPlusTwoLockRatioForClass(assetClass)
+		tPlusTwoDuration := c.config.tPlusTwoDurationForClass(assetClass)
+		var (
+			tPlusTwoStop    float64
+			tPlusTwoApplied bool
+		)
+		if pos.Side == "long" {
+			tPlusTwoStop, tPlusTwoApplied = applyTPlusTwoLong(risk, stageOneMax, currentR, entry, riskDistance, tPlusTwoLockRatio, tPlusTwoDuration)
+		} else {
+			tPlusTwoStop, tPlusTwoApplied = applyTPlusTwoShort(risk, stageOneMax, currentR, entry, riskDistance, tPlusTwoLockRatio, tPlusTwoDuration)
+		}
+
+		if tPlusTwoApplied {
+			forceExit := (pos.Side == "long" && tPlusTwoStop >= mark) || (pos.Side == "short" && tPlusTwoStop <= mark)
+			var newStop float64
+			if pos.Side == "long" {
+				newStop = tightenStopLong(baseStop, tPlusTwoStop)
+			} else {
+				newStop = tightenStopShort(baseStop, tPlusTwoStop)
+			}
+
+			suffix := ""
+			if floatsAlmostEqual(newStop, baseStop) {
+				suffix = "（保持现有止损）"
+			}
+
+			reason := fmt.Sprintf("阶段0：<%.2fR，T+2=%.4f，最终止损=%.4f%s", phaseStartBreakeven, tPlusTwoStop, newStop, suffix)
+			if forceExit {
+				reason += "（触发强制平仓）"
+			}
+			return newStop, forceExit, reason, nil
+		}
+
 		return baseStop, false, fmt.Sprintf("阶段0：<%.2fR，保持止损 %.4f", phaseStartBreakeven, baseStop), nil
 	}
 
@@ -165,19 +200,8 @@ func calculateDynamicStopLong(
 	}
 	s2 := peak - atr*atrMult
 
-	stageOneMax := stageOneMaxR(profile)
-	tPlusTwoLockRatio := cfg.tPlusTwoLockRatioForClass(assetClass)
-	tPlusTwoDuration := cfg.tPlusTwoDurationForClass(assetClass)
-	tPlusTwoStop, tPlusTwoApplied := applyTPlusTwoLong(risk, stageOneMax, currentR, entry, riskDistance, tPlusTwoLockRatio, tPlusTwoDuration)
-
 	candidate := math.Max(baseStop, math.Max(s1, s2))
 	forceExit := false
-	if tPlusTwoApplied {
-		candidate = math.Max(candidate, tPlusTwoStop)
-		if tPlusTwoStop >= mark {
-			forceExit = true
-		}
-	}
 
 	newStop := tightenStopLong(baseStop, candidate)
 	suffix := ""
@@ -185,18 +209,9 @@ func calculateDynamicStopLong(
 		suffix = "（保持现有止损）"
 	}
 
-	tPlusTwoInfo := ""
-	if tPlusTwoApplied {
-		desc := "T+2=%.4f"
-		if forceExit {
-			desc += "（触发强制平仓）"
-		}
-		tPlusTwoInfo = fmt.Sprintf("，"+desc, tPlusTwoStop)
-	}
-
 	reason := fmt.Sprintf(
-		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f → S1=%.4f，S2=%.4f%s，最终止损=%.4f%s",
-		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, s1, s2, tPlusTwoInfo, newStop, suffix,
+		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f → S1=%.4f，S2=%.4f，最终止损=%.4f%s",
+		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, s1, s2, newStop, suffix,
 	)
 	return newStop, forceExit, reason, nil
 }
@@ -243,19 +258,8 @@ func calculateDynamicStopShort(
 	}
 	s2 := peak + atr*atrMult
 
-	stageOneMax := stageOneMaxR(profile)
-	tPlusTwoLockRatio := cfg.tPlusTwoLockRatioForClass(assetClass)
-	tPlusTwoDuration := cfg.tPlusTwoDurationForClass(assetClass)
-	tPlusTwoStop, tPlusTwoApplied := applyTPlusTwoShort(risk, stageOneMax, currentR, entry, riskDistance, tPlusTwoLockRatio, tPlusTwoDuration)
-
 	candidate := math.Min(baseStop, math.Min(s1, s2))
 	forceExit := false
-	if tPlusTwoApplied {
-		candidate = math.Min(candidate, tPlusTwoStop)
-		if tPlusTwoStop <= mark {
-			forceExit = true
-		}
-	}
 
 	newStop := tightenStopShort(baseStop, candidate)
 	suffix := ""
@@ -263,18 +267,9 @@ func calculateDynamicStopShort(
 		suffix = "（保持现有止损）"
 	}
 
-	tPlusTwoInfo := ""
-	if tPlusTwoApplied {
-		desc := "T+2=%.4f"
-		if forceExit {
-			desc += "（触发强制平仓）"
-		}
-		tPlusTwoInfo = fmt.Sprintf("，"+desc, tPlusTwoStop)
-	}
-
 	reason := fmt.Sprintf(
-		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f → S1=%.4f，S2=%.4f%s，最终止损=%.4f%s",
-		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, s1, s2, tPlusTwoInfo, newStop, suffix,
+		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f → S1=%.4f，S2=%.4f，最终止损=%.4f%s",
+		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, s1, s2, newStop, suffix,
 	)
 	return newStop, forceExit, reason, nil
 }
