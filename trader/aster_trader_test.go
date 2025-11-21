@@ -297,3 +297,123 @@ func TestNewAsterTrader(t *testing.T) {
 		})
 	}
 }
+
+// TestAsterTrader_GetOpenOrders_IntegrationWithMonitor 测试 GetOpenOrders 与 Monitor 逻辑的集成
+func TestAsterTrader_GetOpenOrders_IntegrationWithMonitor(t *testing.T) {
+	// 创建测试套件
+	suite := NewAsterTraderTestSuite(t)
+	defer suite.Cleanup()
+
+	// 1. 准备 Mock 数据
+	// 模拟 /fapi/v3/openOrders 返回的数据
+	// 包含一个有效的止损单和一个干扰单
+	mockOrders := []map[string]interface{}{
+		{
+			"orderId":       1001,
+			"symbol":        "BTCUSDT",
+			"type":          "STOP_MARKET", // 有效类型
+			"closePosition": true,          // 必须为 true
+			"positionSide":  "LONG",        // 多单止损
+			"side":          "SELL",
+			"stopPrice":     "49500.00", // 止损价
+			"status":        "NEW",
+		},
+		{
+			"orderId":       1002,
+			"symbol":        "BTCUSDT",
+			"type":          "LIMIT", // 干扰类型
+			"closePosition": false,
+			"positionSide":  "LONG",
+			"side":          "BUY",
+			"price":         "48000.00",
+			"status":        "NEW",
+		},
+	}
+
+	// 设置 Mock Server 的 handler
+	suite.mockServer.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/fapi/v3/openOrders" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(mockOrders)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	// 2. 调用 GetOpenOrders
+	orders, err := suite.Trader.GetOpenOrders("BTCUSDT")
+	assert.NoError(t, err)
+	assert.Len(t, orders, 2)
+
+	// 3. 验证 Monitor 中的逻辑 (复制自 monitor.go getCurrentStopLoss)
+	// 目标: 确保能正确提取到 49500.00
+	targetSide := "LONG"
+	var (
+		bestPrice float64
+		found     bool
+	)
+
+	for _, raw := range orders {
+		// 逻辑复制开始
+		orderType := "UNKNOWN"
+		if t, ok := raw["type"].(string); ok {
+			orderType = t
+		}
+
+		if orderType != "STOP_MARKET" && orderType != "STOP" {
+			continue
+		}
+
+		if closePosition, ok := raw["closePosition"].(bool); !ok || !closePosition {
+			continue
+		}
+
+		positionSide := ""
+		if ps, ok := raw["positionSide"].(string); ok {
+			positionSide = ps
+		}
+		if positionSide == "" || positionSide == "BOTH" {
+			if s, ok := raw["side"].(string); ok {
+				positionSide = s
+			}
+		}
+
+		// 简单的转大写比较
+		if positionSide != targetSide {
+			continue
+		}
+
+		// 提取 stopPrice
+		var stopPrice float64
+		if sp, ok := raw["stopPrice"].(float64); ok {
+			stopPrice = sp
+		} else {
+			continue
+		}
+
+		if stopPrice <= 0 {
+			continue
+		}
+
+		if !found {
+			bestPrice = stopPrice
+			found = true
+			continue
+		}
+
+		if targetSide == "LONG" {
+			if stopPrice > bestPrice {
+				bestPrice = stopPrice
+			}
+		} else {
+			if stopPrice < bestPrice {
+				bestPrice = stopPrice
+			}
+		}
+		// 逻辑复制结束
+	}
+
+	// 4. 断言结果
+	assert.True(t, found, "应该找到止损单")
+	assert.Equal(t, 49500.00, bestPrice, "止损价格应该匹配")
+}
