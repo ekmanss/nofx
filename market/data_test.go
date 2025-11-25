@@ -38,6 +38,24 @@ func generate4HKlines(count int) []Kline {
 	return klines
 }
 
+// generate1HKlines 生成1小时级别 K 线
+func generate1HKlines(count int) []Kline {
+	klines := make([]Kline, count)
+	for i := 0; i < count; i++ {
+		base := 20.0 + float64(i)*0.2
+		klines[i] = Kline{
+			OpenTime:  int64(i) * 3_600_000,
+			Open:      base,
+			High:      base + 0.5,
+			Low:       base - 0.4,
+			Close:     base + 0.1,
+			Volume:    300 + float64(i),
+			CloseTime: int64(i+1)*3_600_000 - 1,
+		}
+	}
+	return klines
+}
+
 func TestBuildDailyIndicatorsLengths(t *testing.T) {
 	klines := generateDailyKlines(250)
 	ind := buildDailyIndicators(klines)
@@ -114,6 +132,32 @@ func TestBuildFourHourIndicatorsLengths(t *testing.T) {
 	}
 	if ind.MACDLine[len(ind.MACDLine)-1] == 0 || ind.RSI14[len(ind.RSI14)-1] == 0 || ind.ATR14[len(ind.ATR14)-1] == 0 || ind.ADX14[len(ind.ADX14)-1] == 0 {
 		t.Fatalf("expected MACD/RSI/ATR/ADX latest values to be non-zero")
+	}
+	if ind.BollUpper20_2[len(ind.BollUpper20_2)-1] == 0 || ind.BollMiddle20_2[len(ind.BollMiddle20_2)-1] == 0 || ind.BollLower20_2[len(ind.BollLower20_2)-1] == 0 {
+		t.Fatalf("expected Bollinger values to be non-zero")
+	}
+}
+
+func TestBuildOneHourIndicatorsLengths(t *testing.T) {
+	klines := generate1HKlines(200)
+	ind := buildOneHourIndicators(klines)
+
+	if len(ind.EMA20) != len(klines) || len(ind.EMA50) != len(klines) {
+		t.Fatalf("EMA series length mismatch: want %d", len(klines))
+	}
+	if len(ind.RSI7) != 60 || len(ind.RSI14) != 60 {
+		t.Fatalf("RSI lengths incorrect")
+	}
+	if len(ind.BollUpper20_2) != 60 || len(ind.BollMiddle20_2) != 60 || len(ind.BollLower20_2) != 60 {
+		t.Fatalf("Bollinger lengths incorrect")
+	}
+
+	lastIdx := len(ind.EMA20) - 1
+	if ind.EMA20[lastIdx] == 0 || ind.EMA50[lastIdx] == 0 {
+		t.Fatalf("expected EMA values to be non-zero at latest bar")
+	}
+	if ind.RSI7[len(ind.RSI7)-1] == 0 || ind.RSI14[len(ind.RSI14)-1] == 0 {
+		t.Fatalf("expected RSI latest values to be non-zero")
 	}
 	if ind.BollUpper20_2[len(ind.BollUpper20_2)-1] == 0 || ind.BollMiddle20_2[len(ind.BollMiddle20_2)-1] == 0 || ind.BollLower20_2[len(ind.BollLower20_2)-1] == 0 {
 		t.Fatalf("expected Bollinger values to be non-zero")

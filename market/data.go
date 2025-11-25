@@ -12,6 +12,7 @@ import (
 const (
 	dailyKlinesLimit    = 250
 	fourHourKlinesLimit = 200
+	oneHourKlinesLimit  = 200
 	macdSignalPeriod    = 9
 )
 
@@ -63,6 +64,18 @@ func Get(symbol string) (*Data, error) {
 		klines4h = klines4h[len(klines4h)-fourHourKlinesLimit:]
 	}
 
+	// 获取1小时K线数据
+	klines1h, err := getKlinesWithLimit(symbol, "1h", oneHourKlinesLimit)
+	if err != nil {
+		return nil, fmt.Errorf("获取1小时K线失败: %v", err)
+	}
+	if len(klines1h) == 0 {
+		return nil, fmt.Errorf("1小时K线数据为空")
+	}
+	if len(klines1h) > oneHourKlinesLimit {
+		klines1h = klines1h[len(klines1h)-oneHourKlinesLimit:]
+	}
+
 	// 获取更实时的价格（优先使用3m）
 	currentPrice := 0.0
 	if klines3m, err3m := WSMonitorCli.GetCurrentKlines(symbol, "3m"); err3m == nil && len(klines3m) > 0 {
@@ -79,6 +92,7 @@ func Get(symbol string) (*Data, error) {
 
 	indicators := buildDailyIndicators(klines1d)
 	fourHourIndicators := buildFourHourIndicators(klines4h)
+	oneHourIndicators := buildOneHourIndicators(klines1h)
 
 	return &Data{
 		Symbol:       symbol,
@@ -90,6 +104,10 @@ func Get(symbol string) (*Data, error) {
 		FourHour: &FourHourData{
 			Klines:     klines4h,
 			Indicators: fourHourIndicators,
+		},
+		OneHour: &OneHourData{
+			Klines:     klines1h,
+			Indicators: oneHourIndicators,
 		},
 	}, nil
 }
@@ -142,6 +160,26 @@ func buildFourHourIndicators(klines []Kline) FourHourIndicators {
 		ADX14:          takeLastN(adx14, 60),
 		PlusDI14:       takeLastN(plusDI14, 60),
 		MinusDI14:      takeLastN(minusDI14, 60),
+		BollUpper20_2:  takeLastN(bollUpper, 60),
+		BollMiddle20_2: takeLastN(bollMiddle, 60),
+		BollLower20_2:  takeLastN(bollLower, 60),
+	}
+}
+
+// buildOneHourIndicators 生成1小时指标
+func buildOneHourIndicators(klines []Kline) OneHourIndicators {
+	ema20 := calculateEMASeries(klines, 20)
+	ema50 := calculateEMASeries(klines, 50)
+
+	rsi7 := calculateRSISeries(klines, 7)
+	rsi14 := calculateRSISeries(klines, 14)
+	bollUpper, bollMiddle, bollLower := calculateBollingerBands(klines, 20, 2)
+
+	return OneHourIndicators{
+		EMA20:          ema20,
+		EMA50:          ema50,
+		RSI7:           takeLastN(rsi7, 60),
+		RSI14:          takeLastN(rsi14, 60),
 		BollUpper20_2:  takeLastN(bollUpper, 60),
 		BollMiddle20_2: takeLastN(bollMiddle, 60),
 		BollLower20_2:  takeLastN(bollLower, 60),
@@ -441,6 +479,30 @@ func Format(data *Data) string {
 
 	priceStr := formatPriceWithDynamicPrecision(data.CurrentPrice)
 	sb.WriteString(fmt.Sprintf("symbol = %s, current_price = %s\n\n", data.Symbol, priceStr))
+
+	if data.OneHour != nil {
+		sb.WriteString(fmt.Sprintf("1h ohlcv (latest %d):\n", len(data.OneHour.Klines)))
+		displayKlines := data.OneHour.Klines
+		if len(displayKlines) > 10 {
+			displayKlines = displayKlines[len(displayKlines)-10:]
+			sb.WriteString("(showing last 10 bars)\n")
+		}
+		sb.WriteString(formatKlines(displayKlines))
+		sb.WriteString("\n")
+
+		ind := data.OneHour.Indicators
+		sb.WriteString("1h Indicators:\n")
+		sb.WriteString(fmt.Sprintf("EMA20/50 (last %d): %s / %s\n",
+			minInt(len(ind.EMA20), 5),
+			formatFloatSlice(takeLastN(ind.EMA20, 5)),
+			formatFloatSlice(takeLastN(ind.EMA50, 5))))
+		sb.WriteString(fmt.Sprintf("RSI7 (last %d): %s\n", len(ind.RSI7), formatFloatSlice(ind.RSI7)))
+		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(ind.RSI14), formatFloatSlice(ind.RSI14)))
+		sb.WriteString(fmt.Sprintf("Bollinger Bands 20,2 (last %d): upper %s\n", len(ind.BollUpper20_2), formatFloatSlice(ind.BollUpper20_2)))
+		sb.WriteString(fmt.Sprintf("Boll middle: %s\n", formatFloatSlice(ind.BollMiddle20_2)))
+		sb.WriteString(fmt.Sprintf("Boll lower: %s\n", formatFloatSlice(ind.BollLower20_2)))
+		sb.WriteString("\n")
+	}
 
 	if data.FourHour != nil {
 		sb.WriteString(fmt.Sprintf("4h ohlcv (latest %d):\n", len(data.FourHour.Klines)))

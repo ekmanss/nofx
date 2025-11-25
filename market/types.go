@@ -8,6 +8,7 @@ type Data struct {
 	CurrentPrice float64
 	Daily        *DailyData
 	FourHour     *FourHourData
+	OneHour      *OneHourData
 }
 
 // DailyData 日线数据（仅保留最近 250 根）
@@ -20,6 +21,12 @@ type DailyData struct {
 type FourHourData struct {
 	Klines     []Kline
 	Indicators FourHourIndicators
+}
+
+// OneHourData 1小时数据（仅保留最近 200 根）
+type OneHourData struct {
+	Klines     []Kline
+	Indicators OneHourIndicators
 }
 
 // DailyIndicators 日线指标
@@ -48,6 +55,17 @@ type FourHourIndicators struct {
 	ADX14          []float64
 	PlusDI14       []float64
 	MinusDI14      []float64
+	BollUpper20_2  []float64
+	BollMiddle20_2 []float64
+	BollLower20_2  []float64
+}
+
+// OneHourIndicators 1小时指标
+type OneHourIndicators struct {
+	EMA20          []float64
+	EMA50          []float64
+	RSI7           []float64
+	RSI14          []float64
 	BollUpper20_2  []float64
 	BollMiddle20_2 []float64
 	BollLower20_2  []float64
