@@ -20,6 +20,24 @@ func generateDailyKlines(count int) []Kline {
 	return klines
 }
 
+// generate4HKlines 生成4小时级别 K 线
+func generate4HKlines(count int) []Kline {
+	klines := make([]Kline, count)
+	for i := 0; i < count; i++ {
+		base := 50.0 + float64(i)*0.3
+		klines[i] = Kline{
+			OpenTime:  int64(i) * 14_400_000, // 4h in ms
+			Open:      base,
+			High:      base + 0.8,
+			Low:       base - 0.6,
+			Close:     base + 0.2,
+			Volume:    500 + float64(i),
+			CloseTime: int64(i+1)*14_400_000 - 1,
+		}
+	}
+	return klines
+}
+
 func TestBuildDailyIndicatorsLengths(t *testing.T) {
 	klines := generateDailyKlines(250)
 	ind := buildDailyIndicators(klines)
@@ -70,5 +88,34 @@ func TestBuildDailyIndicatorsShortSeries(t *testing.T) {
 	}
 	if ind.SMA200[len(ind.SMA200)-1] != 0 {
 		t.Fatalf("SMA200 should be zero when period > data length")
+	}
+}
+
+func TestBuildFourHourIndicatorsLengths(t *testing.T) {
+	klines := generate4HKlines(200)
+	ind := buildFourHourIndicators(klines)
+
+	if len(ind.EMA20) != len(klines) || len(ind.EMA50) != len(klines) || len(ind.EMA100) != len(klines) || len(ind.EMA200) != len(klines) {
+		t.Fatalf("EMA series length mismatch: want %d", len(klines))
+	}
+	if len(ind.MACDLine) != 60 || len(ind.MACDSignal) != 60 || len(ind.MACDHist) != 60 {
+		t.Fatalf("MACD series lengths = %d/%d/%d, want 60", len(ind.MACDLine), len(ind.MACDSignal), len(ind.MACDHist))
+	}
+	if len(ind.RSI14) != 60 || len(ind.ATR14) != 60 || len(ind.ADX14) != 60 || len(ind.PlusDI14) != 60 || len(ind.MinusDI14) != 60 {
+		t.Fatalf("RSI/ATR/ADX/DI lengths incorrect")
+	}
+	if len(ind.BollUpper20_2) != 60 || len(ind.BollMiddle20_2) != 60 || len(ind.BollLower20_2) != 60 {
+		t.Fatalf("Bollinger lengths incorrect")
+	}
+
+	lastIdx := len(ind.EMA20) - 1
+	if ind.EMA20[lastIdx] == 0 || ind.EMA200[lastIdx] == 0 {
+		t.Fatalf("expected EMA values to be non-zero at latest bar")
+	}
+	if ind.MACDLine[len(ind.MACDLine)-1] == 0 || ind.RSI14[len(ind.RSI14)-1] == 0 || ind.ATR14[len(ind.ATR14)-1] == 0 || ind.ADX14[len(ind.ADX14)-1] == 0 {
+		t.Fatalf("expected MACD/RSI/ATR/ADX latest values to be non-zero")
+	}
+	if ind.BollUpper20_2[len(ind.BollUpper20_2)-1] == 0 || ind.BollMiddle20_2[len(ind.BollMiddle20_2)-1] == 0 || ind.BollLower20_2[len(ind.BollLower20_2)-1] == 0 {
+		t.Fatalf("expected Bollinger values to be non-zero")
 	}
 }

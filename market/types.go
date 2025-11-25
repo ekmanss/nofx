@@ -7,12 +7,19 @@ type Data struct {
 	Symbol       string
 	CurrentPrice float64
 	Daily        *DailyData
+	FourHour     *FourHourData
 }
 
 // DailyData 日线数据（仅保留最近 250 根）
 type DailyData struct {
 	Klines     []Kline
 	Indicators DailyIndicators
+}
+
+// FourHourData 4小时数据（仅保留最近 200 根）
+type FourHourData struct {
+	Klines     []Kline
+	Indicators FourHourIndicators
 }
 
 // DailyIndicators 日线指标
@@ -25,6 +32,25 @@ type DailyIndicators struct {
 	MACDHist   []float64
 	RSI14      []float64
 	ATR14      []float64
+}
+
+// FourHourIndicators 4小时指标
+type FourHourIndicators struct {
+	EMA20          []float64
+	EMA50          []float64
+	EMA100         []float64
+	EMA200         []float64
+	MACDLine       []float64
+	MACDSignal     []float64
+	MACDHist       []float64
+	RSI14          []float64
+	ATR14          []float64
+	ADX14          []float64
+	PlusDI14       []float64
+	MinusDI14      []float64
+	BollUpper20_2  []float64
+	BollMiddle20_2 []float64
+	BollLower20_2  []float64
 }
 
 // Binance API 响应结构
