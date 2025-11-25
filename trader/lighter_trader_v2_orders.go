@@ -173,9 +173,9 @@ func (t *LighterTraderV2) GetActiveOrders(symbol string) ([]OrderResponse, error
 
 	// 解析響應
 	var apiResp struct {
-		Code    int              `json:"code"`
-		Message string           `json:"message"`
-		Data    []OrderResponse  `json:"data"`
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    []OrderResponse `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &apiResp); err != nil {
@@ -237,6 +237,11 @@ func (t *LighterTraderV2) CancelOrder(symbol, orderID string) error {
 
 	log.Printf("✓ LIGHTER訂單已取消 - ID: %s", orderID)
 	return nil
+}
+
+// GetOpenOrders 當前 Lighter 接口暫不支持，返回占位錯誤
+func (t *LighterTraderV2) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	return nil, fmt.Errorf("lighter trader does not support GetOpenOrders")
 }
 
 // submitCancelOrder 提交已簽名的取消訂單到 LIGHTER API

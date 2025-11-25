@@ -574,6 +574,11 @@ func (t *BybitTrader) FormatQuantity(symbol string, quantity float64) (string, e
 	return fmt.Sprintf("%.3f", quantity), nil
 }
 
+// GetOpenOrders 当前 Bybit 接口暂不支持，返回占位错误
+func (t *BybitTrader) GetOpenOrders(symbol string) ([]map[string]interface{}, error) {
+	return nil, fmt.Errorf("bybit trader does not support GetOpenOrders")
+}
+
 // 辅助方法
 
 func (t *BybitTrader) clearCache() {
