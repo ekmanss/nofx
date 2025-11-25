@@ -76,19 +76,8 @@ func Get(symbol string) (*Data, error) {
 		klines1h = klines1h[len(klines1h)-oneHourKlinesLimit:]
 	}
 
-	// 获取更实时的价格（优先使用3m）
-	currentPrice := 0.0
-	if klines3m, err3m := WSMonitorCli.GetCurrentKlines(symbol, "3m"); err3m == nil && len(klines3m) > 0 {
-		if isStaleData(klines3m, symbol) {
-			log.Printf("⚠️  WARNING: %s detected stale 3m data, fallback to daily close", symbol)
-		} else {
-			currentPrice = klines3m[len(klines3m)-1].Close
-		}
-	}
-	// 回退：使用日线收盘价
-	if currentPrice == 0 {
-		currentPrice = klines1d[len(klines1d)-1].Close
-	}
+	// 实时价格：使用4小时最新收盘价
+	currentPrice := klines4h[len(klines4h)-1].Close
 
 	indicators := buildDailyIndicators(klines1d)
 	fourHourIndicators := buildFourHourIndicators(klines4h)
