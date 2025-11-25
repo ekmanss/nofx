@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	dailyKlinesLimit    = 250
+	dailyKlinesLimit    = 200
 	fourHourKlinesLimit = 200
 	oneHourKlinesLimit  = 200
 	macdSignalPeriod    = 9
