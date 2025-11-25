@@ -40,6 +40,8 @@ func Get(symbol string) (*Data, error) {
 	// 标准化 symbol
 	symbol = Normalize(symbol)
 
+	apiClient := NewAPIClient()
+
 	// 获取日线K线数据
 	klines1d, err := getKlinesWithLimit(symbol, "1d", dailyKlinesLimit)
 	if err != nil {
@@ -79,6 +81,12 @@ func Get(symbol string) (*Data, error) {
 	// 实时价格：使用4小时最新收盘价
 	currentPrice := klines4h[len(klines4h)-1].Close
 
+	// 获取资金费率历史（最近20条）
+	fundingRates, err := apiClient.GetFundingRateHistory(symbol, 20)
+	if err != nil {
+		log.Printf("⚠️  获取资金费率历史失败: %v", err)
+	}
+
 	indicators := buildDailyIndicators(klines1d)
 	fourHourIndicators := buildFourHourIndicators(klines4h)
 	oneHourIndicators := buildOneHourIndicators(klines1h)
@@ -98,6 +106,7 @@ func Get(symbol string) (*Data, error) {
 			Klines:     klines1h,
 			Indicators: oneHourIndicators,
 		},
+		FundingRates: fundingRates,
 	}, nil
 }
 
@@ -552,6 +561,12 @@ func Format(data *Data) string {
 		sb.WriteString(fmt.Sprintf("ATR14 (last %d): %s\n", len(ind.ATR14), formatFloatSlice(ind.ATR14)))
 	}
 
+	if len(data.FundingRates) > 0 {
+		sb.WriteString(fmt.Sprintf("Funding rate history (last %d):\n", len(data.FundingRates)))
+		sb.WriteString(formatFundingRates(data.FundingRates))
+		sb.WriteString("\n")
+	}
+
 	return sb.String()
 }
 
@@ -595,6 +610,20 @@ func formatKlines(klines []Kline) string {
 		openTime := time.Unix(k.OpenTime/1000, (k.OpenTime%1000)*1000000).In(utc8)
 		sb.WriteString(fmt.Sprintf("  [%d] OpenTime: %s, O: %.2f, H: %.2f, L: %.2f, C: %.2f, V: %.2f\n",
 			i+1, openTime.Format("2006-01-02 15:04:05"), k.Open, k.High, k.Low, k.Close, k.Volume))
+	}
+	return sb.String()
+}
+
+func formatFundingRates(rates []FundingRate) string {
+	var sb strings.Builder
+	utc8 := time.FixedZone("UTC+8", 8*60*60)
+	start := 0
+	if len(rates) > 20 {
+		start = len(rates) - 20
+	}
+	for i := start; i < len(rates); i++ {
+		ts := time.UnixMilli(rates[i].FundingTime).In(utc8)
+		sb.WriteString(fmt.Sprintf("  [%d] %s rate: %.6f, mark: %.4f\n", i+1, ts.Format("2006-01-02 15:04:05"), rates[i].FundingRate, rates[i].MarkPrice))
 	}
 	return sb.String()
 }

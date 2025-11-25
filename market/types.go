@@ -9,6 +9,7 @@ type Data struct {
 	Daily        *DailyData
 	FourHour     *FourHourData
 	OneHour      *OneHourData
+	FundingRates []FundingRate
 }
 
 // DailyData 日线数据（仅保留最近 250 根）
@@ -105,6 +106,14 @@ type KlineResponse []interface{}
 type PriceTicker struct {
 	Symbol string `json:"symbol"`
 	Price  string `json:"price"`
+}
+
+// FundingRate 资金费率历史条目
+type FundingRate struct {
+	Symbol      string
+	FundingRate float64
+	FundingTime int64
+	MarkPrice   float64
 }
 
 type Ticker24hr struct {

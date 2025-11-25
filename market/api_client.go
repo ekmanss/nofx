@@ -158,3 +158,56 @@ func (c *APIClient) GetCurrentPrice(symbol string) (float64, error) {
 
 	return price, nil
 }
+
+// GetFundingRateHistory 获取资金费率历史
+func (c *APIClient) GetFundingRateHistory(symbol string, limit int) ([]FundingRate, error) {
+	url := fmt.Sprintf("%s/fapi/v1/fundingRate", baseURL)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	q := req.URL.Query()
+	q.Add("symbol", symbol)
+	q.Add("limit", strconv.Itoa(limit))
+	req.URL.RawQuery = q.Encode()
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var raw []struct {
+		Symbol      string `json:"symbol"`
+		FundingRate string `json:"fundingRate"`
+		FundingTime int64  `json:"fundingTime"`
+		MarkPrice   string `json:"markPrice"`
+	}
+
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+
+	rates := make([]FundingRate, 0, len(raw))
+	for _, item := range raw {
+		rate, err1 := strconv.ParseFloat(item.FundingRate, 64)
+		mark, err2 := strconv.ParseFloat(item.MarkPrice, 64)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		rates = append(rates, FundingRate{
+			Symbol:      item.Symbol,
+			FundingRate: rate,
+			FundingTime: item.FundingTime,
+			MarkPrice:   mark,
+		})
+	}
+
+	return rates, nil
+}
