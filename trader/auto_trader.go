@@ -89,6 +89,13 @@ type AutoTraderConfig struct {
 	SystemPromptTemplate string // 系统提示词模板名称（如 "default", "aggressive"）
 }
 
+const (
+	// entryRiskPerTradePct 表示开仓时可接受的单笔资金风险比例
+	entryRiskPerTradePct = 0.015
+	// fixedEntryLeverage 为开仓时固定使用的杠杆倍数
+	fixedEntryLeverage = 5
+)
+
 // AutoTrader 自动交易器
 type AutoTrader struct {
 	id                    string // Trader唯一标识
@@ -869,15 +876,12 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	if err != nil {
 		return err
 	}
+	entryPrice := marketData.CurrentPrice
+	if entryPrice <= 0 {
+		return fmt.Errorf("无效的当前价格: %.4f", entryPrice)
+	}
 
-	// 计算数量
-	quantity := decision.PositionSizeUSD / marketData.CurrentPrice
-	actionRecord.Quantity = quantity
-	actionRecord.Price = marketData.CurrentPrice
-
-	// ⚠️ 保证金验证：防止保证金不足错误（code=-2019）
-	requiredMargin := decision.PositionSizeUSD / float64(decision.Leverage)
-
+	// 获取账户余额与权益，用于风险控制
 	balance, err := at.trader.GetBalance()
 	if err != nil {
 		return fmt.Errorf("获取账户余额失败: %w", err)
@@ -886,9 +890,63 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	if avail, ok := balance["availableBalance"].(float64); ok {
 		availableBalance = avail
 	}
+	totalWalletBalance := 0.0
+	if wallet, ok := balance["totalWalletBalance"].(float64); ok {
+		totalWalletBalance = wallet
+	}
+	totalUnrealizedProfit := 0.0
+	if unrealized, ok := balance["totalUnrealizedProfit"].(float64); ok {
+		totalUnrealizedProfit = unrealized
+	}
+	totalEquity := totalWalletBalance + totalUnrealizedProfit
+	if totalEquity == 0 && availableBalance > 0 {
+		// 回退：部分交易所返回值缺失时使用可用余额估算净值
+		totalEquity = availableBalance
+	}
+
+	if decision.StopLoss <= 0 {
+		return fmt.Errorf("开多仓必须提供有效的止损价格")
+	}
+	priceGap := entryPrice - decision.StopLoss
+	if priceGap <= 0 {
+		return fmt.Errorf("止损价必须低于当前价格才可开多: 当前价 %.4f, 止损 %.4f", entryPrice, decision.StopLoss)
+	}
+
+	riskAmount := totalEquity * entryRiskPerTradePct
+	if riskAmount <= 0 {
+		return fmt.Errorf("账户权益不足以计算风险敞口，总权益: %.2f", totalEquity)
+	}
+
+	// 按风险金额与止损距离计算名义仓位
+	positionSizeUSD := (riskAmount / priceGap) * entryPrice
+	if positionSizeUSD <= 0 {
+		return fmt.Errorf("计算得到的开仓金额无效: %.4f", positionSizeUSD)
+	}
+
+	const (
+		minPositionSizeGeneral = 20.0
+	)
+	if positionSizeUSD < minPositionSizeGeneral {
+		return fmt.Errorf("开仓金额过小(%.2f USDT)，必须≥%.2f USDT", positionSizeUSD, minPositionSizeGeneral)
+	}
+
+	log.Printf("  🧮 重新计算仓位: 杠杆 %dx | 名义仓位 %.2f USDT | 风险金额 %.2f USDT | 止损 %.4f", fixedEntryLeverage, positionSizeUSD, riskAmount, decision.StopLoss)
+
+	// 固定使用 5x 杠杆开多
+	decision.Leverage = fixedEntryLeverage
+	decision.PositionSizeUSD = positionSizeUSD
+	actionRecord.Leverage = fixedEntryLeverage
+
+	// 计算数量
+	quantity := positionSizeUSD / entryPrice
+	actionRecord.Quantity = quantity
+	actionRecord.Price = entryPrice
+
+	// ⚠️ 保证金验证：防止保证金不足错误（code=-2019）
+	requiredMargin := positionSizeUSD / float64(fixedEntryLeverage)
 
 	// 手续费估算（Taker费率 0.04%）
-	estimatedFee := decision.PositionSizeUSD * 0.0004
+	estimatedFee := positionSizeUSD * 0.0004
 	totalRequired := requiredMargin + estimatedFee
 
 	if totalRequired > availableBalance {
@@ -903,7 +961,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *decision.Decision, act
 	}
 
 	// 开仓
-	order, err := at.trader.OpenLong(decision.Symbol, quantity, decision.Leverage)
+	order, err := at.trader.OpenLong(decision.Symbol, quantity, fixedEntryLeverage)
 	if err != nil {
 		return err
 	}
@@ -952,14 +1010,10 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	if err != nil {
 		return err
 	}
-
-	// 计算数量
-	quantity := decision.PositionSizeUSD / marketData.CurrentPrice
-	actionRecord.Quantity = quantity
-	actionRecord.Price = marketData.CurrentPrice
-
-	// ⚠️ 保证金验证：防止保证金不足错误（code=-2019）
-	requiredMargin := decision.PositionSizeUSD / float64(decision.Leverage)
+	entryPrice := marketData.CurrentPrice
+	if entryPrice <= 0 {
+		return fmt.Errorf("无效的当前价格: %.4f", entryPrice)
+	}
 
 	balance, err := at.trader.GetBalance()
 	if err != nil {
@@ -969,9 +1023,65 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	if avail, ok := balance["availableBalance"].(float64); ok {
 		availableBalance = avail
 	}
+	totalWalletBalance := 0.0
+	if wallet, ok := balance["totalWalletBalance"].(float64); ok {
+		totalWalletBalance = wallet
+	}
+	totalUnrealizedProfit := 0.0
+	if unrealized, ok := balance["totalUnrealizedProfit"].(float64); ok {
+		totalUnrealizedProfit = unrealized
+	}
+	totalEquity := totalWalletBalance + totalUnrealizedProfit
+	if totalEquity == 0 && availableBalance > 0 {
+		totalEquity = availableBalance
+	}
+
+	if decision.StopLoss <= 0 {
+		return fmt.Errorf("开空仓必须提供有效的止损价格")
+	}
+	priceGap := decision.StopLoss - entryPrice
+	if priceGap <= 0 {
+		return fmt.Errorf("止损价必须高于当前价格才可开空: 当前价 %.4f, 止损 %.4f", entryPrice, decision.StopLoss)
+	}
+
+	riskAmount := totalEquity * entryRiskPerTradePct
+	if riskAmount <= 0 {
+		return fmt.Errorf("账户权益不足以计算风险敞口，总权益: %.2f", totalEquity)
+	}
+
+	positionSizeUSD := (riskAmount / priceGap) * entryPrice
+	if positionSizeUSD <= 0 {
+		return fmt.Errorf("计算得到的开仓金额无效: %.4f", positionSizeUSD)
+	}
+
+	const (
+		minPositionSizeGeneral = 12.0
+		minPositionSizeBTCETH  = 60.0
+	)
+	if decision.Symbol == "BTCUSDT" || decision.Symbol == "ETHUSDT" {
+		if positionSizeUSD < minPositionSizeBTCETH {
+			return fmt.Errorf("%s 开仓金额过小(%.2f USDT)，必须≥%.2f USDT", decision.Symbol, positionSizeUSD, minPositionSizeBTCETH)
+		}
+	} else if positionSizeUSD < minPositionSizeGeneral {
+		return fmt.Errorf("开仓金额过小(%.2f USDT)，必须≥%.2f USDT", positionSizeUSD, minPositionSizeGeneral)
+	}
+
+	log.Printf("  🧮 重新计算仓位: 杠杆 %dx | 名义仓位 %.2f USDT | 风险金额 %.2f USDT | 止损 %.4f", fixedEntryLeverage, positionSizeUSD, riskAmount, decision.StopLoss)
+
+	decision.Leverage = fixedEntryLeverage
+	decision.PositionSizeUSD = positionSizeUSD
+	actionRecord.Leverage = fixedEntryLeverage
+
+	// 计算数量
+	quantity := positionSizeUSD / entryPrice
+	actionRecord.Quantity = quantity
+	actionRecord.Price = entryPrice
+
+	// ⚠️ 保证金验证：防止保证金不足错误（code=-2019）
+	requiredMargin := positionSizeUSD / float64(fixedEntryLeverage)
 
 	// 手续费估算（Taker费率 0.04%）
-	estimatedFee := decision.PositionSizeUSD * 0.0004
+	estimatedFee := positionSizeUSD * 0.0004
 	totalRequired := requiredMargin + estimatedFee
 
 	if totalRequired > availableBalance {
@@ -986,7 +1096,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *decision.Decision, ac
 	}
 
 	// 开仓
-	order, err := at.trader.OpenShort(decision.Symbol, quantity, decision.Leverage)
+	order, err := at.trader.OpenShort(decision.Symbol, quantity, fixedEntryLeverage)
 	if err != nil {
 		return err
 	}
