@@ -364,15 +364,23 @@ func tightenStopLong(current, candidate float64) float64 {
 }
 
 func fetchOneHourATR(symbol string, period int) (float64, error) {
-	data, err := market.Get(symbol)
-	if err != nil {
-		return 0, fmt.Errorf("获取市场数据失败: %w", err)
-	}
-	if data == nil || len(data.Klines1h) == 0 {
-		return 0, fmt.Errorf("1H ATR%d 数据不可用", period)
+	apiClient := market.NewAPIClient()
+	normalized := market.Normalize(symbol)
+
+	limit := period * 2
+	if limit < period+1 {
+		limit = period + 1
 	}
 
-	atr := calculateATRFromKlines(data.Klines1h, period)
+	klines, err := apiClient.GetKlines(normalized, "1h", limit)
+	if err != nil {
+		return 0, fmt.Errorf("获取1小时K线失败: %w", err)
+	}
+	if len(klines) <= period {
+		return 0, fmt.Errorf("1H ATR%d 数据不足", period)
+	}
+
+	atr := calculateATRFromKlines(klines, period)
 	if atr <= 0 {
 		return 0, fmt.Errorf("1H ATR%d 数据不可用", period)
 	}
