@@ -471,94 +471,93 @@ func takeLastN(values []float64, n int) []float64 {
 	return append([]float64{}, values[len(values)-n:]...)
 }
 
-// Format 格式化输出市场数据（仅包含日线部分）
+func takeLastKlines(klines []Kline, n int) []Kline {
+	if len(klines) <= n {
+		return klines
+	}
+	return klines[len(klines)-n:]
+}
+
+// Format 格式化输出市场数据（按需求输出1d/4h/1h指标和K线）
 func Format(data *Data) string {
 	var sb strings.Builder
 
 	priceStr := formatPriceWithDynamicPrecision(data.CurrentPrice)
 	sb.WriteString(fmt.Sprintf("symbol = %s, current_price = %s\n\n", data.Symbol, priceStr))
 
-	if data.OneHour != nil {
-		sb.WriteString(fmt.Sprintf("1h ohlcv (latest %d):\n", len(data.OneHour.Klines)))
-		displayKlines := data.OneHour.Klines
-		if len(displayKlines) > 10 {
-			displayKlines = displayKlines[len(displayKlines)-10:]
-			sb.WriteString("(showing last 10 bars)\n")
-		}
-		sb.WriteString(formatKlines(displayKlines))
+	if data.Daily != nil {
+		dailyKlines := takeLastKlines(data.Daily.Klines, 200)
+		sb.WriteString(fmt.Sprintf("1d ohlcv (latest %d):\n", len(dailyKlines)))
+		sb.WriteString(formatKlines(dailyKlines))
 		sb.WriteString("\n")
 
-		ind := data.OneHour.Indicators
-		sb.WriteString("1h Indicators:\n")
-		sb.WriteString(fmt.Sprintf("EMA20/50 (last %d): %s / %s\n",
-			minInt(len(ind.EMA20), 5),
-			formatFloatSlice(takeLastN(ind.EMA20, 5)),
-			formatFloatSlice(takeLastN(ind.EMA50, 5))))
-		sb.WriteString(fmt.Sprintf("RSI7 (last %d): %s\n", len(ind.RSI7), formatFloatSlice(ind.RSI7)))
+		ind := data.Daily.Indicators
+		sb.WriteString("1d Indicators:\n")
+		sb.WriteString(fmt.Sprintf("SMA50 (per bar): %s\n", formatFloatSlice(ind.SMA50)))
+		sb.WriteString(fmt.Sprintf("SMA200 (per bar): %s\n", formatFloatSlice(ind.SMA200)))
+		sb.WriteString(fmt.Sprintf("EMA20 (per bar): %s\n", formatFloatSlice(ind.EMA20)))
+		sb.WriteString(fmt.Sprintf("MACD12-26-9 (last %d): line %s | signal %s | hist %s\n",
+			len(ind.MACDLine),
+			formatFloatSlice(ind.MACDLine),
+			formatFloatSlice(ind.MACDSignal),
+			formatFloatSlice(ind.MACDHist)))
 		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(ind.RSI14), formatFloatSlice(ind.RSI14)))
-		sb.WriteString(fmt.Sprintf("Bollinger Bands 20,2 (last %d): upper %s\n", len(ind.BollUpper20_2), formatFloatSlice(ind.BollUpper20_2)))
-		sb.WriteString(fmt.Sprintf("Boll middle: %s\n", formatFloatSlice(ind.BollMiddle20_2)))
-		sb.WriteString(fmt.Sprintf("Boll lower: %s\n", formatFloatSlice(ind.BollLower20_2)))
+		sb.WriteString(fmt.Sprintf("ATR14 (last %d): %s\n", len(ind.ATR14), formatFloatSlice(ind.ATR14)))
 		sb.WriteString("\n")
 	}
 
 	if data.FourHour != nil {
-		sb.WriteString(fmt.Sprintf("4h ohlcv (latest %d):\n", len(data.FourHour.Klines)))
-		displayKlines := data.FourHour.Klines
-		if len(displayKlines) > 10 {
-			displayKlines = displayKlines[len(displayKlines)-10:]
-			sb.WriteString("(showing last 10 bars)\n")
-		}
-		sb.WriteString(formatKlines(displayKlines))
+		fourHKlines := takeLastKlines(data.FourHour.Klines, 200)
+		sb.WriteString(fmt.Sprintf("4h ohlcv (latest %d):\n", len(fourHKlines)))
+		sb.WriteString(formatKlines(fourHKlines))
 		sb.WriteString("\n")
 
 		ind := data.FourHour.Indicators
 		sb.WriteString("4h Indicators:\n")
-		sb.WriteString(fmt.Sprintf("EMA20/50/100/200 (last %d): %s / %s / %s / %s\n",
-			minInt(len(ind.EMA20), 5),
-			formatFloatSlice(takeLastN(ind.EMA20, 5)),
-			formatFloatSlice(takeLastN(ind.EMA50, 5)),
-			formatFloatSlice(takeLastN(ind.EMA100, 5)),
-			formatFloatSlice(takeLastN(ind.EMA200, 5))))
-
-		sb.WriteString(fmt.Sprintf("MACD12-26-9 (last %d): line %s\n", len(ind.MACDLine), formatFloatSlice(ind.MACDLine)))
-		sb.WriteString(fmt.Sprintf("MACD signal: %s\n", formatFloatSlice(ind.MACDSignal)))
-		sb.WriteString(fmt.Sprintf("MACD hist: %s\n", formatFloatSlice(ind.MACDHist)))
-
+		sb.WriteString(fmt.Sprintf("EMA20/50/100/200 (per bar): %s | %s | %s | %s\n",
+			formatFloatSlice(ind.EMA20),
+			formatFloatSlice(ind.EMA50),
+			formatFloatSlice(ind.EMA100),
+			formatFloatSlice(ind.EMA200)))
+		sb.WriteString(fmt.Sprintf("MACD12-26-9 (last %d): line %s | signal %s | hist %s\n",
+			len(ind.MACDLine),
+			formatFloatSlice(ind.MACDLine),
+			formatFloatSlice(ind.MACDSignal),
+			formatFloatSlice(ind.MACDHist)))
 		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(ind.RSI14), formatFloatSlice(ind.RSI14)))
 		sb.WriteString(fmt.Sprintf("ATR14 (last %d): %s\n", len(ind.ATR14), formatFloatSlice(ind.ATR14)))
-		sb.WriteString(fmt.Sprintf("ADX14 (last %d): %s\n", len(ind.ADX14), formatFloatSlice(ind.ADX14)))
-		sb.WriteString(fmt.Sprintf("+DI14 (last %d): %s\n", len(ind.PlusDI14), formatFloatSlice(ind.PlusDI14)))
-		sb.WriteString(fmt.Sprintf("-DI14 (last %d): %s\n", len(ind.MinusDI14), formatFloatSlice(ind.MinusDI14)))
-
-		sb.WriteString(fmt.Sprintf("Bollinger Bands 20,2 (last %d): upper %s\n", len(ind.BollUpper20_2), formatFloatSlice(ind.BollUpper20_2)))
-		sb.WriteString(fmt.Sprintf("Boll middle: %s\n", formatFloatSlice(ind.BollMiddle20_2)))
-		sb.WriteString(fmt.Sprintf("Boll lower: %s\n", formatFloatSlice(ind.BollLower20_2)))
+		sb.WriteString(fmt.Sprintf("ADX14 (+DI/-DI) (last %d): adx %s | +di %s | -di %s\n",
+			len(ind.ADX14),
+			formatFloatSlice(ind.ADX14),
+			formatFloatSlice(ind.PlusDI14),
+			formatFloatSlice(ind.MinusDI14)))
+		sb.WriteString(fmt.Sprintf("Bollinger Bands 20,2 (last %d): upper %s | middle %s | lower %s\n",
+			len(ind.BollUpper20_2),
+			formatFloatSlice(ind.BollUpper20_2),
+			formatFloatSlice(ind.BollMiddle20_2),
+			formatFloatSlice(ind.BollLower20_2)))
 		sb.WriteString("\n")
 	}
 
-	if data.Daily != nil {
-		sb.WriteString(fmt.Sprintf("1d ohlcv (latest %d):\n", len(data.Daily.Klines)))
-		displayKlines := data.Daily.Klines
-		if len(displayKlines) > 10 {
-			displayKlines = displayKlines[len(displayKlines)-10:]
-			sb.WriteString("(showing last 10 bars)\n")
-		}
-		sb.WriteString(formatKlines(displayKlines))
+	if data.OneHour != nil {
+		oneHKlines := takeLastKlines(data.OneHour.Klines, 200)
+		sb.WriteString(fmt.Sprintf("1h ohlcv (latest %d):\n", len(oneHKlines)))
+		sb.WriteString(formatKlines(oneHKlines))
 		sb.WriteString("\n")
 
-		ind := data.Daily.Indicators
-		sb.WriteString("Indicators:\n")
-		sb.WriteString(fmt.Sprintf("SMA50 (per bar): last %d => %s\n", minInt(len(ind.SMA50), 5), formatFloatSlice(takeLastN(ind.SMA50, 5))))
-		sb.WriteString(fmt.Sprintf("SMA200 (per bar): last %d => %s\n", minInt(len(ind.SMA200), 5), formatFloatSlice(takeLastN(ind.SMA200, 5))))
-		sb.WriteString(fmt.Sprintf("EMA20 (per bar): last %d => %s\n", minInt(len(ind.EMA20), 5), formatFloatSlice(takeLastN(ind.EMA20, 5))))
-
-		sb.WriteString(fmt.Sprintf("MACD12-26-9 (last %d): line %s\n", len(ind.MACDLine), formatFloatSlice(ind.MACDLine)))
-		sb.WriteString(fmt.Sprintf("MACD signal: %s\n", formatFloatSlice(ind.MACDSignal)))
-		sb.WriteString(fmt.Sprintf("MACD hist: %s\n", formatFloatSlice(ind.MACDHist)))
-
+		ind := data.OneHour.Indicators
+		sb.WriteString("1h Indicators:\n")
+		sb.WriteString(fmt.Sprintf("EMA20/50 (per bar): %s | %s\n",
+			formatFloatSlice(ind.EMA20),
+			formatFloatSlice(ind.EMA50)))
+		sb.WriteString(fmt.Sprintf("RSI7 (last %d): %s\n", len(ind.RSI7), formatFloatSlice(ind.RSI7)))
 		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(ind.RSI14), formatFloatSlice(ind.RSI14)))
-		sb.WriteString(fmt.Sprintf("ATR14 (last %d): %s\n", len(ind.ATR14), formatFloatSlice(ind.ATR14)))
+		sb.WriteString(fmt.Sprintf("Bollinger Bands 20,2 (last %d): upper %s | middle %s | lower %s\n",
+			len(ind.BollUpper20_2),
+			formatFloatSlice(ind.BollUpper20_2),
+			formatFloatSlice(ind.BollMiddle20_2),
+			formatFloatSlice(ind.BollLower20_2)))
+		sb.WriteString("\n")
 	}
 
 	if len(data.FundingRates) > 0 {
@@ -672,13 +671,6 @@ func isStaleData(klines []Kline, symbol string) bool {
 
 	log.Printf("⚠️  %s detected extreme price stability (no fluctuation for %d consecutive periods), but volume is normal", symbol, stalePriceThreshold)
 	return false
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 // parseFloat 解析float值
