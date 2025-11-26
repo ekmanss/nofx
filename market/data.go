@@ -481,91 +481,140 @@ func takeLastKlines(klines []Kline, n int) []Kline {
 	return klines[len(klines)-n:]
 }
 
+func takeLastFundingRates(rates []FundingRate, n int) []FundingRate {
+	if len(rates) <= n {
+		return rates
+	}
+	return rates[len(rates)-n:]
+}
+
 // Format 格式化输出市场数据（按需求输出1d/4h/1h指标和K线）
 func Format(data *Data) string {
 	var sb strings.Builder
+	const (
+		dailyDisplayCount    = 60
+		fourHourDisplayCount = 60
+		oneHourDisplayCount  = 20
+	)
+	utc8 := time.FixedZone("UTC+8", 8*60*60)
 
 	priceStr := formatPriceWithDynamicPrecision(data.CurrentPrice)
 	sb.WriteString(fmt.Sprintf("symbol = %s, current_price = %s\n\n", data.Symbol, priceStr))
 
 	if data.Daily != nil {
-		dailyKlines := takeLastKlines(data.Daily.Klines, 200)
-		sb.WriteString(fmt.Sprintf("1d ohlcv (latest %d):\n", len(dailyKlines)))
-		sb.WriteString(formatKlines(dailyKlines))
+		dailyKlines := takeLastKlines(data.Daily.Klines, dailyDisplayCount)
+		dailyRange := describeKlineRange(dailyKlines, utc8)
+		sb.WriteString(fmt.Sprintf("1d ohlcv (latest %d, %s):\n", len(dailyKlines), dailyRange))
+		sb.WriteString(formatKlines(dailyKlines, utc8))
 		sb.WriteString("\n")
 
 		ind := data.Daily.Indicators
-		sb.WriteString("1d Indicators:\n")
-		sb.WriteString(fmt.Sprintf("SMA50 (per bar): %s\n", formatFloatSlice(ind.SMA50)))
-		sb.WriteString(fmt.Sprintf("SMA200 (per bar): %s\n", formatFloatSlice(ind.SMA200)))
-		sb.WriteString(fmt.Sprintf("EMA20 (per bar): %s\n", formatFloatSlice(ind.EMA20)))
+		sma50 := takeLastN(ind.SMA50, dailyDisplayCount)
+		sma200 := takeLastN(ind.SMA200, dailyDisplayCount)
+		ema20 := takeLastN(ind.EMA20, dailyDisplayCount)
+		macdLine := takeLastN(ind.MACDLine, 60)
+		macdSignal := takeLastN(ind.MACDSignal, 60)
+		macdHist := takeLastN(ind.MACDHist, 60)
+		rsi14 := takeLastN(ind.RSI14, 60)
+		atr14 := takeLastN(ind.ATR14, 60)
+
+		sb.WriteString("1d Indicators (aligned with ohlcv, oldest->newest):\n")
+		sb.WriteString(fmt.Sprintf("SMA50 (per bar): %s\n", formatFloatSlice(sma50)))
+		sb.WriteString(fmt.Sprintf("SMA200 (per bar): %s\n", formatFloatSlice(sma200)))
+		sb.WriteString(fmt.Sprintf("EMA20 (per bar): %s\n", formatFloatSlice(ema20)))
 		sb.WriteString(fmt.Sprintf("MACD12-26-9 (last %d): line %s | signal %s | hist %s\n",
-			len(ind.MACDLine),
-			formatFloatSlice(ind.MACDLine),
-			formatFloatSlice(ind.MACDSignal),
-			formatFloatSlice(ind.MACDHist)))
-		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(ind.RSI14), formatFloatSlice(ind.RSI14)))
-		sb.WriteString(fmt.Sprintf("ATR14 (last %d): %s\n", len(ind.ATR14), formatFloatSlice(ind.ATR14)))
+			len(macdLine),
+			formatFloatSlice(macdLine),
+			formatFloatSlice(macdSignal),
+			formatFloatSlice(macdHist)))
+		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(rsi14), formatFloatSlice(rsi14)))
+		sb.WriteString(fmt.Sprintf("ATR14 (last %d): %s\n", len(atr14), formatFloatSlice(atr14)))
 		sb.WriteString("\n")
 	}
 
 	if data.FourHour != nil {
-		fourHKlines := takeLastKlines(data.FourHour.Klines, 200)
-		sb.WriteString(fmt.Sprintf("4h ohlcv (latest %d):\n", len(fourHKlines)))
-		sb.WriteString(formatKlines(fourHKlines))
+		fourHKlines := takeLastKlines(data.FourHour.Klines, fourHourDisplayCount)
+		fourHourRange := describeKlineRange(fourHKlines, utc8)
+		sb.WriteString(fmt.Sprintf("4h ohlcv (latest %d, %s):\n", len(fourHKlines), fourHourRange))
+		sb.WriteString(formatKlines(fourHKlines, utc8))
 		sb.WriteString("\n")
 
 		ind := data.FourHour.Indicators
-		sb.WriteString("4h Indicators:\n")
-		sb.WriteString(fmt.Sprintf("EMA20/50/100/200 (per bar): %s | %s | %s | %s\n",
-			formatFloatSlice(ind.EMA20),
-			formatFloatSlice(ind.EMA50),
-			formatFloatSlice(ind.EMA100),
-			formatFloatSlice(ind.EMA200)))
+		ema20 := takeLastN(ind.EMA20, fourHourDisplayCount)
+		ema50 := takeLastN(ind.EMA50, fourHourDisplayCount)
+		ema100 := takeLastN(ind.EMA100, fourHourDisplayCount)
+		macdLine := takeLastN(ind.MACDLine, 60)
+		macdSignal := takeLastN(ind.MACDSignal, 60)
+		macdHist := takeLastN(ind.MACDHist, 60)
+		rsi14 := takeLastN(ind.RSI14, 60)
+		atr14 := takeLastN(ind.ATR14, 60)
+		adx14 := takeLastN(ind.ADX14, 60)
+		plusDI14 := takeLastN(ind.PlusDI14, 60)
+		minusDI14 := takeLastN(ind.MinusDI14, 60)
+		bollUpper := takeLastN(ind.BollUpper20_2, 60)
+		bollMiddle := takeLastN(ind.BollMiddle20_2, 60)
+		bollLower := takeLastN(ind.BollLower20_2, 60)
+
+		sb.WriteString("4h Indicators (aligned with ohlcv, oldest->newest):\n")
+		sb.WriteString(fmt.Sprintf("EMA20/50/100 (per bar): %s | %s | %s\n",
+			formatFloatSlice(ema20),
+			formatFloatSlice(ema50),
+			formatFloatSlice(ema100)))
 		sb.WriteString(fmt.Sprintf("MACD12-26-9 (last %d): line %s | signal %s | hist %s\n",
-			len(ind.MACDLine),
-			formatFloatSlice(ind.MACDLine),
-			formatFloatSlice(ind.MACDSignal),
-			formatFloatSlice(ind.MACDHist)))
-		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(ind.RSI14), formatFloatSlice(ind.RSI14)))
-		sb.WriteString(fmt.Sprintf("ATR14 (last %d): %s\n", len(ind.ATR14), formatFloatSlice(ind.ATR14)))
+			len(macdLine),
+			formatFloatSlice(macdLine),
+			formatFloatSlice(macdSignal),
+			formatFloatSlice(macdHist)))
+		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(rsi14), formatFloatSlice(rsi14)))
+		sb.WriteString(fmt.Sprintf("ATR14 (last %d): %s\n", len(atr14), formatFloatSlice(atr14)))
 		sb.WriteString(fmt.Sprintf("ADX14 (+DI/-DI) (last %d): adx %s | +di %s | -di %s\n",
-			len(ind.ADX14),
-			formatFloatSlice(ind.ADX14),
-			formatFloatSlice(ind.PlusDI14),
-			formatFloatSlice(ind.MinusDI14)))
+			len(adx14),
+			formatFloatSlice(adx14),
+			formatFloatSlice(plusDI14),
+			formatFloatSlice(minusDI14)))
 		sb.WriteString(fmt.Sprintf("Bollinger Bands 20,2 (last %d): upper %s | middle %s | lower %s\n",
-			len(ind.BollUpper20_2),
-			formatFloatSlice(ind.BollUpper20_2),
-			formatFloatSlice(ind.BollMiddle20_2),
-			formatFloatSlice(ind.BollLower20_2)))
+			len(bollUpper),
+			formatFloatSlice(bollUpper),
+			formatFloatSlice(bollMiddle),
+			formatFloatSlice(bollLower)))
 		sb.WriteString("\n")
 	}
 
 	if data.OneHour != nil {
-		oneHKlines := takeLastKlines(data.OneHour.Klines, 200)
-		sb.WriteString(fmt.Sprintf("1h ohlcv (latest %d):\n", len(oneHKlines)))
-		sb.WriteString(formatKlines(oneHKlines))
+		oneHKlines := takeLastKlines(data.OneHour.Klines, oneHourDisplayCount)
+		oneHourRange := describeKlineRange(oneHKlines, utc8)
+		sb.WriteString(fmt.Sprintf("1h ohlcv (latest %d, %s):\n", len(oneHKlines), oneHourRange))
+		sb.WriteString(formatKlines(oneHKlines, utc8))
 		sb.WriteString("\n")
 
 		ind := data.OneHour.Indicators
-		sb.WriteString("1h Indicators:\n")
+		ema20 := takeLastN(ind.EMA20, oneHourDisplayCount)
+		ema50 := takeLastN(ind.EMA50, oneHourDisplayCount)
+		rsi7 := takeLastN(ind.RSI7, oneHourDisplayCount)
+		rsi14 := takeLastN(ind.RSI14, oneHourDisplayCount)
+		bollUpper := takeLastN(ind.BollUpper20_2, oneHourDisplayCount)
+		bollMiddle := takeLastN(ind.BollMiddle20_2, oneHourDisplayCount)
+		bollLower := takeLastN(ind.BollLower20_2, oneHourDisplayCount)
+
+		sb.WriteString("1h Indicators (aligned with ohlcv, oldest->newest):\n")
 		sb.WriteString(fmt.Sprintf("EMA20/50 (per bar): %s | %s\n",
-			formatFloatSlice(ind.EMA20),
-			formatFloatSlice(ind.EMA50)))
-		sb.WriteString(fmt.Sprintf("RSI7 (last %d): %s\n", len(ind.RSI7), formatFloatSlice(ind.RSI7)))
-		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(ind.RSI14), formatFloatSlice(ind.RSI14)))
+			formatFloatSlice(ema20),
+			formatFloatSlice(ema50)))
+		sb.WriteString(fmt.Sprintf("RSI7 (last %d): %s\n", len(rsi7), formatFloatSlice(rsi7)))
+		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(rsi14), formatFloatSlice(rsi14)))
 		sb.WriteString(fmt.Sprintf("Bollinger Bands 20,2 (last %d): upper %s | middle %s | lower %s\n",
-			len(ind.BollUpper20_2),
-			formatFloatSlice(ind.BollUpper20_2),
-			formatFloatSlice(ind.BollMiddle20_2),
-			formatFloatSlice(ind.BollLower20_2)))
+			len(bollUpper),
+			formatFloatSlice(bollUpper),
+			formatFloatSlice(bollMiddle),
+			formatFloatSlice(bollLower)))
 		sb.WriteString("\n")
 	}
 
 	if len(data.FundingRates) > 0 {
-		sb.WriteString(fmt.Sprintf("Funding rate history (last %d):\n", len(data.FundingRates)))
-		sb.WriteString(formatFundingRates(data.FundingRates))
+		fundingRates := takeLastFundingRates(data.FundingRates, 20)
+		fundingRange := describeFundingRange(fundingRates, utc8)
+		sb.WriteString(fmt.Sprintf("Funding rate history (last %d, %s):\n", len(fundingRates), fundingRange))
+		sb.WriteString(formatFundingRates(fundingRates, utc8))
 		sb.WriteString("\n")
 	}
 
@@ -604,30 +653,41 @@ func formatFloatSlice(values []float64) string {
 }
 
 // formatKlines 格式化K线数据为字符串
-func formatKlines(klines []Kline) string {
+func formatKlines(klines []Kline, loc *time.Location) string {
 	var sb strings.Builder
-	// UTC+8 timezone
-	utc8 := time.FixedZone("UTC+8", 8*60*60)
 	for i, k := range klines {
-		openTime := time.Unix(k.OpenTime/1000, (k.OpenTime%1000)*1000000).In(utc8)
+		openTime := time.Unix(k.OpenTime/1000, (k.OpenTime%1000)*1000000).In(loc)
 		sb.WriteString(fmt.Sprintf("  [%d] OpenTime: %s, O: %.2f, H: %.2f, L: %.2f, C: %.2f, V: %.2f\n",
 			i+1, openTime.Format("2006-01-02 15:04:05"), k.Open, k.High, k.Low, k.Close, k.Volume))
 	}
 	return sb.String()
 }
 
-func formatFundingRates(rates []FundingRate) string {
+func formatFundingRates(rates []FundingRate, loc *time.Location) string {
 	var sb strings.Builder
-	utc8 := time.FixedZone("UTC+8", 8*60*60)
-	start := 0
-	if len(rates) > 20 {
-		start = len(rates) - 20
-	}
-	for i := start; i < len(rates); i++ {
-		ts := time.UnixMilli(rates[i].FundingTime).In(utc8)
-		sb.WriteString(fmt.Sprintf("  [%d] %s rate: %.6f, mark: %.4f\n", i+1, ts.Format("2006-01-02 15:04:05"), rates[i].FundingRate, rates[i].MarkPrice))
+	for i, rate := range rates {
+		ts := time.UnixMilli(rate.FundingTime).In(loc)
+		sb.WriteString(fmt.Sprintf("  [%d] %s rate: %.6f, mark: %.4f\n", i+1, ts.Format("2006-01-02 15:04:05"), rate.FundingRate, rate.MarkPrice))
 	}
 	return sb.String()
+}
+
+func describeKlineRange(klines []Kline, loc *time.Location) string {
+	if len(klines) == 0 {
+		return "no data"
+	}
+	start := time.Unix(klines[0].OpenTime/1000, (klines[0].OpenTime%1000)*1000000).In(loc)
+	end := time.Unix(klines[len(klines)-1].OpenTime/1000, (klines[len(klines)-1].OpenTime%1000)*1000000).In(loc)
+	return fmt.Sprintf("oldest->newest, %s ~ %s", start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"))
+}
+
+func describeFundingRange(rates []FundingRate, loc *time.Location) string {
+	if len(rates) == 0 {
+		return "no data"
+	}
+	start := time.UnixMilli(rates[0].FundingTime).In(loc)
+	end := time.UnixMilli(rates[len(rates)-1].FundingTime).In(loc)
+	return fmt.Sprintf("oldest->newest, %s ~ %s", start.Format("2006-01-02 15:04:05"), end.Format("2006-01-02 15:04:05"))
 }
 
 // Normalize 标准化symbol,确保是USDT交易对
