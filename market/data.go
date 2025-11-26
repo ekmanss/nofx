@@ -10,29 +10,29 @@ import (
 )
 
 const (
-	dailyKlinesLimit    = 200
-	fourHourKlinesLimit = 200
-	oneHourKlinesLimit  = 200
+	dailyKlinesLimit    = 500
+	fourHourKlinesLimit = 500
+	oneHourKlinesLimit  = 500
 	macdSignalPeriod    = 9
 )
 
 // getKlinesWithLimit 获取指定数量的K线数据
 func getKlinesWithLimit(symbol string, interval string, limit int) ([]Kline, error) {
-	// 先尝试从缓存获取
-	allKlines, err := WSMonitorCli.GetCurrentKlines(symbol, interval)
-	if err != nil {
-		// 如果缓存没有，直接从API获取指定数量
-		apiClient := NewAPIClient()
-		return apiClient.GetKlines(symbol, interval, limit)
+	apiClient := NewAPIClient()
+
+	// 优先尝试用缓存，但缓存长度不足时直接走API获取完整数量
+	if WSMonitorCli != nil {
+		allKlines, err := WSMonitorCli.GetCurrentKlines(symbol, interval)
+		if err == nil {
+			if len(allKlines) >= limit {
+				return allKlines[len(allKlines)-limit:], nil
+			}
+			// 缓存不足指定数量，改为从API获取足量数据
+		}
 	}
 
-	// 如果缓存中的数据少于请求的数量，返回全部
-	if len(allKlines) <= limit {
-		return allKlines, nil
-	}
-
-	// 返回最近的limit条数据
-	return allKlines[len(allKlines)-limit:], nil
+	// 直接从API获取指定数量
+	return apiClient.GetKlines(symbol, interval, limit)
 }
 
 // Get 获取指定代币的市场数据（仅保留日线所需字段）
@@ -77,6 +77,9 @@ func Get(symbol string) (*Data, error) {
 	if len(klines1h) > oneHourKlinesLimit {
 		klines1h = klines1h[len(klines1h)-oneHourKlinesLimit:]
 	}
+
+	// 打印获取到的K线数量
+	log.Printf("📊 %s K线数据: 1d=%d条, 4h=%d条, 1h=%d条", symbol, len(klines1d), len(klines4h), len(klines1h))
 
 	// 实时价格：使用4小时最新收盘价
 	currentPrice := klines4h[len(klines4h)-1].Close
