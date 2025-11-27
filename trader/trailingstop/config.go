@@ -9,6 +9,8 @@ import (
 type Config struct {
 	// ATRPeriod 用于计算ATR的周期（K线数量）。
 	ATRPeriod int
+	// ATRInterval ATR 数据使用的 K 线周期（如 "1h"、"4h"、"1d"）。
+	ATRInterval string
 	// PhaseStartBreakeven 触发保本阶段所需的最小R倍数。
 	PhaseStartBreakeven float64
 	// DefaultAssetClass 默认的资产分类（当无任何前缀规则匹配时使用）。
@@ -41,6 +43,8 @@ type AssetProfile struct {
 	RegimeAdjustment RegimeAdjustment
 	// ATRPeriod 为该资产分类单独配置ATR计算周期（>0时生效）。
 	ATRPeriod int
+	// ATRInterval 为该资产分类单独配置ATR K线周期（非空时覆盖全局）。
+	ATRInterval string
 	// MaxRLockAlpha 峰值R需要锁定的比例，用于限制最大浮盈回吐。
 	MaxRLockAlpha float64
 	// PhaseStartBreakeven 触发保本阶段所需的最小R倍数（>0时覆盖全局配置）。
@@ -79,8 +83,9 @@ type RegimeAdjustment struct {
 
 var defaultConfig = &Config{
 	// 全局默认 ATR 周期：
-	// 你只看 1H K 线且持仓短，过去 7 根 K 线足够反应当前动能。
-	ATRPeriod: 7,
+	ATRPeriod: 5,
+	// 默认使用 1H K 线计算 ATR，可根据策略改为 4H/1D。
+	ATRInterval: "4h",
 
 	// 全局保本触发：只要浮盈达到 0.8R，必须把风险敞口关掉。
 	// 2% 的本金风险很大，绝不能让一个已经跑出 0.8R 的单子最后变成亏损。
@@ -110,49 +115,48 @@ var defaultConfig = &Config{
 		// BTC 策略：稳健的一击脱离
 		// ==========================================
 		"btc": {
-			ATRPeriod:           7,   // 7 小时 ATR
-			PhaseStartBreakeven: 0.8, // ✅ 调高：BTC 先跑满 0.8R 再开始保本，给趋势多一点空间
-			MinLockedR:          0.2,
-
-			// 允许最高浮盈回撤 30%，超过就走。
-			MaxRLockAlpha: 0.70,
+			ATRPeriod:           5,
+			ATRInterval:         "4h",
+			PhaseStartBreakeven: 0.5,
+			MinLockedR:          0.3,
+			MaxRLockAlpha:       0.65,
 
 			Ranges: []TrailingRange{
 				// 【阶段 1：启动期】 0 - 1.0R
 				// 不要太快锁死，让价格有空间波动；
 				// 锁 0.25R 左右，既有保护，又不至于止损贴得太近。
-				{MaxR: 1.0, LockRatio: 0.25, BaseATRMultiplier: 2.5, Label: "🛡️ BTC 启动保护"},
+				{MaxR: 1.2, LockRatio: 0.3, BaseATRMultiplier: 2.8, Label: "🛡️ BTC 启动保护"},
 
 				// 【阶段 2：达标期】 1.0R - 2.0R
 				// 你的目标大概率在这个区间。
 				// 收紧 ATR 系数到 1.5，开始认真保护已有利润。
-				{MaxR: 2.0, LockRatio: 0.5, BaseATRMultiplier: 1.5, Label: "💰 BTC 达标锁利"},
+				{MaxR: 2.2, LockRatio: 0.6, BaseATRMultiplier: 1.6, Label: "💰 BTC 达标锁利"},
 
 				// 【阶段 3：超预期】 > 2.0R
 				// 超预期大单，紧贴价格（1.0 ATR），防止从高位砸回去。
-				{MaxR: 0, LockRatio: 0.8, BaseATRMultiplier: 1.0, Label: "🚀 BTC 加速冲顶"},
+				{MaxR: 0, LockRatio: 0.85, BaseATRMultiplier: 1.1, Label: "🚀 BTC 加速冲顶"},
 			},
 
 			// BTC 波动率修正：
 			// 低波动（横盘）更敏感一点，高波动（插针）稍微放宽，防扫损。
 			RegimeAdjustment: RegimeAdjustment{
-				LowThreshold:   0.005,
+				LowThreshold:   0.008,
 				LowMultiplier:  0.9,
-				HighThreshold:  0.025,
+				HighThreshold:  0.03,
 				HighMultiplier: 1.2,
 			},
 
-			// BTC 不单独改 T+2，比照全局：3 小时后锁 80% 峰值 R
-			// TPlusTwoDuration:  3 * time.Hour,
-			// TPlusTwoLockRatio: 0.8,
+			TPlusTwoDuration:  6 * time.Hour,
+			TPlusTwoLockRatio: 0.7,
 		},
 
 		// ==========================================
 		// 热门山寨策略：高波动，快进快出
 		// ==========================================
 		"trend_alt": {
-			ATRPeriod:           5,   // 山寨变脸极快，只看过去 5 小时
-			PhaseStartBreakeven: 1.0, // ✅ 调高：至少跑出 1R 再保本，减少无谓来回扫
+			ATRPeriod:           5,    // 山寨变脸极快，只看过去 5 小时
+			ATRInterval:         "1h", // 使用 1H K 线
+			PhaseStartBreakeven: 1.0,  // ✅ 调高：至少跑出 1R 再保本，减少无谓来回扫
 			MinLockedR:          0.2,
 
 			// 山寨允许更大的利润回撤，否则极易在震荡里被挤出局。
@@ -205,6 +209,9 @@ func resolveConfig(cfg *Config) *Config {
 
 	if cfg.ATRPeriod > 0 {
 		base.ATRPeriod = cfg.ATRPeriod
+	}
+	if interval := normalizeATRInterval(cfg.ATRInterval); interval != "" {
+		base.ATRInterval = interval
 	}
 	if cfg.PhaseStartBreakeven > 0 {
 		base.PhaseStartBreakeven = cfg.PhaseStartBreakeven
@@ -319,6 +326,24 @@ func (c *Config) atrPeriodForClass(assetClass string) int {
 	return c.ATRPeriod
 }
 
+func (c *Config) atrIntervalForClass(assetClass string) string {
+	if c == nil {
+		return normalizeATRInterval(defaultConfig.ATRInterval)
+	}
+	if profile := c.assetProfile(assetClass); profile != nil {
+		if interval := normalizeATRInterval(profile.ATRInterval); interval != "" {
+			return interval
+		}
+	}
+	if interval := normalizeATRInterval(c.ATRInterval); interval != "" {
+		return interval
+	}
+	if defaultConfig != nil {
+		return normalizeATRInterval(defaultConfig.ATRInterval)
+	}
+	return ""
+}
+
 func (c *Config) adjustATRMultiplier(assetClass string, base, regimeVol float64) float64 {
 	profile := c.assetProfile(assetClass)
 	if profile == nil || regimeVol <= 0 {
@@ -381,4 +406,13 @@ func (c *Config) tPlusTwoDurationForClass(assetClass string) time.Duration {
 		return defaultConfig.TPlusTwoDuration
 	}
 	return 0
+}
+
+func normalizeATRInterval(interval string) string {
+	switch strings.ToLower(strings.TrimSpace(interval)) {
+	case "1h", "4h", "1d":
+		return strings.ToLower(interval)
+	default:
+		return ""
+	}
 }

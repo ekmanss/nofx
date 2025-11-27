@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"nofx/market"
+	"strings"
 	"time"
 )
 
@@ -16,7 +17,7 @@ type RiskSnapshot struct {
 }
 
 // ATRFetcher allows tests to provide deterministic ATR data.
-type ATRFetcher func(symbol string, period int) (float64, error)
+type ATRFetcher func(symbol, interval string, period int) (float64, error)
 
 // ATRTrailingCalculator encapsulates the ATR-based trailing stop rules.
 type ATRTrailingCalculator struct {
@@ -34,7 +35,7 @@ func NewATRTrailingCalculator(fetcher ATRFetcher) *ATRTrailingCalculator {
 func NewATRTrailingCalculatorWithConfig(fetcher ATRFetcher, cfg *Config) *ATRTrailingCalculator {
 	resolved := resolveConfig(cfg)
 	if fetcher == nil {
-		fetcher = fetchOneHourATR
+		fetcher = fetchATRWithInterval
 	}
 	return &ATRTrailingCalculator{fetchATR: fetcher, config: resolved}
 }
@@ -112,12 +113,17 @@ func (c *ATRTrailingCalculator) Calculate(
 
 	atrPeriod := c.config.atrPeriodForClass(assetClass)
 
-	atr, err := c.fetchATR(pos.Symbol, atrPeriod)
+	atrInterval := c.config.atrIntervalForClass(assetClass)
+	if atrInterval == "" {
+		atrInterval = "1h"
+	}
+
+	atr, err := c.fetchATR(pos.Symbol, atrInterval, atrPeriod)
 	if err != nil {
 		return 0, false, "", err
 	}
 	if atr <= 0 {
-		return 0, false, "", fmt.Errorf("1H ATR%d 数据不可用", atrPeriod)
+		return 0, false, "", fmt.Errorf("%s ATR%d 数据不可用", strings.ToUpper(atrInterval), atrPeriod)
 	}
 
 	regimeVol := atr / mark
@@ -132,6 +138,7 @@ func (c *ATRTrailingCalculator) Calculate(
 			atr,
 			regimeVol,
 			atrPeriod,
+			atrInterval,
 			assetClass,
 			c.config,
 		)
@@ -146,6 +153,7 @@ func (c *ATRTrailingCalculator) Calculate(
 		atr,
 		regimeVol,
 		atrPeriod,
+		atrInterval,
 		assetClass,
 		c.config,
 	)
@@ -163,6 +171,7 @@ func calculateDynamicStopLong(
 	risk *RiskSnapshot,
 	currentR, atr, regimeVol float64,
 	atrPeriod int,
+	atrInterval string,
 	assetClass string,
 	cfg *Config,
 ) (float64, bool, string, error) {
@@ -209,9 +218,10 @@ func calculateDynamicStopLong(
 		suffix = "（保持现有止损）"
 	}
 
+	intervalLabel := strings.ToUpper(atrInterval)
 	reason := fmt.Sprintf(
-		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f → S1=%.4f，S2=%.4f，最终止损=%.4f%s",
-		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, s1, s2, newStop, suffix,
+		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(%s,%d)=%.4f×%.2f → S1=%.4f，S2=%.4f，最终止损=%.4f%s",
+		label, regimeVol, lockedR, risk.MaxR, alphaLock, intervalLabel, atrPeriod, atr, atrMult, s1, s2, newStop, suffix,
 	)
 	return newStop, forceExit, reason, nil
 }
@@ -221,6 +231,7 @@ func calculateDynamicStopShort(
 	risk *RiskSnapshot,
 	currentR, atr, regimeVol float64,
 	atrPeriod int,
+	atrInterval string,
 	assetClass string,
 	cfg *Config,
 ) (float64, bool, string, error) {
@@ -267,9 +278,10 @@ func calculateDynamicStopShort(
 		suffix = "（保持现有止损）"
 	}
 
+	intervalLabel := strings.ToUpper(atrInterval)
 	reason := fmt.Sprintf(
-		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(1H,%d)=%.4f×%.2f → S1=%.4f，S2=%.4f，最终止损=%.4f%s",
-		label, regimeVol, lockedR, risk.MaxR, alphaLock, atrPeriod, atr, atrMult, s1, s2, newStop, suffix,
+		"%s：RegimeVol=%.4f，锁R=%.2fR（MaxR=%.2fR，Alpha=%.2fR），ATR(%s,%d)=%.4f×%.2f → S1=%.4f，S2=%.4f，最终止损=%.4f%s",
+		label, regimeVol, lockedR, risk.MaxR, alphaLock, intervalLabel, atrPeriod, atr, atrMult, s1, s2, newStop, suffix,
 	)
 	return newStop, forceExit, reason, nil
 }
@@ -363,26 +375,31 @@ func tightenStopLong(current, candidate float64) float64 {
 	return current
 }
 
-func fetchOneHourATR(symbol string, period int) (float64, error) {
+func fetchATRWithInterval(symbol, interval string, period int) (float64, error) {
 	apiClient := market.NewAPIClient()
 	normalized := market.Normalize(symbol)
+
+	interval = strings.ToLower(strings.TrimSpace(interval))
+	if interval == "" {
+		interval = "1h"
+	}
 
 	limit := period * 2
 	if limit < period+1 {
 		limit = period + 1
 	}
 
-	klines, err := apiClient.GetKlines(normalized, "1h", limit)
+	klines, err := apiClient.GetKlines(normalized, interval, limit)
 	if err != nil {
-		return 0, fmt.Errorf("获取1小时K线失败: %w", err)
+		return 0, fmt.Errorf("获取 %s K线失败: %w", strings.ToUpper(interval), err)
 	}
 	if len(klines) <= period {
-		return 0, fmt.Errorf("1H ATR%d 数据不足", period)
+		return 0, fmt.Errorf("%s ATR%d 数据不足", strings.ToUpper(interval), period)
 	}
 
 	atr := calculateATRFromKlines(klines, period)
 	if atr <= 0 {
-		return 0, fmt.Errorf("1H ATR%d 数据不可用", period)
+		return 0, fmt.Errorf("%s ATR%d 数据不可用", strings.ToUpper(interval), period)
 	}
 	return atr, nil
 }
