@@ -349,7 +349,7 @@ func shouldApplyTPlusTwo(risk *RiskSnapshot, stageOneMax, currentR float64, dura
 	if risk.MaxR <= 0 {
 		return false
 	}
-	if currentR <= 0 {
+	if currentR <= 0.1 {
 		return false
 	}
 	if currentR >= stageOneMax {
