@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	weeklyKlinesLimit   = 500
 	dailyKlinesLimit    = 500
 	fourHourKlinesLimit = 500
 	oneHourKlinesLimit  = 500
@@ -41,6 +42,18 @@ func Get(symbol string) (*Data, error) {
 	symbol = Normalize(symbol)
 
 	apiClient := NewAPIClient()
+
+	// 获取周线K线数据
+	klines1w, err := getKlinesWithLimit(symbol, "1w", weeklyKlinesLimit)
+	if err != nil {
+		return nil, fmt.Errorf("获取1周K线失败: %v", err)
+	}
+	if len(klines1w) == 0 {
+		return nil, fmt.Errorf("1周K线数据为空")
+	}
+	if len(klines1w) > weeklyKlinesLimit {
+		klines1w = klines1w[len(klines1w)-weeklyKlinesLimit:]
+	}
 
 	// 获取日线K线数据
 	klines1d, err := getKlinesWithLimit(symbol, "1d", dailyKlinesLimit)
@@ -79,7 +92,7 @@ func Get(symbol string) (*Data, error) {
 	}
 
 	// 打印获取到的K线数量
-	log.Printf("📊 %s K线数据: 1d=%d条, 4h=%d条, 1h=%d条", symbol, len(klines1d), len(klines4h), len(klines1h))
+	log.Printf("📊 %s K线数据: 1w=%d条, 1d=%d条, 4h=%d条, 1h=%d条", symbol, len(klines1w), len(klines1d), len(klines4h), len(klines1h))
 
 	// 实时价格：使用4小时最新收盘价
 	currentPrice := klines4h[len(klines4h)-1].Close
@@ -90,6 +103,7 @@ func Get(symbol string) (*Data, error) {
 		log.Printf("⚠️  获取资金费率历史失败: %v", err)
 	}
 
+	weeklyIndicators := buildWeeklyIndicators(klines1w)
 	indicators := buildDailyIndicators(klines1d)
 	fourHourIndicators := buildFourHourIndicators(klines4h)
 	oneHourIndicators := buildOneHourIndicators(klines1h)
@@ -97,6 +111,10 @@ func Get(symbol string) (*Data, error) {
 	return &Data{
 		Symbol:       symbol,
 		CurrentPrice: currentPrice,
+		Weekly: &WeeklyData{
+			Klines:     klines1w,
+			Indicators: weeklyIndicators,
+		},
 		Daily: &DailyData{
 			Klines:     klines1d,
 			Indicators: indicators,
@@ -111,6 +129,19 @@ func Get(symbol string) (*Data, error) {
 		},
 		FundingRates: fundingRates,
 	}, nil
+}
+
+// buildWeeklyIndicators 生成周线指标
+func buildWeeklyIndicators(klines []Kline) WeeklyIndicators {
+	sma50 := calculateSMASeries(klines, 50)
+	sma200 := calculateSMASeries(klines, 200)
+	ema20 := calculateEMASeries(klines, 20)
+
+	return WeeklyIndicators{
+		SMA50:  sma50,
+		SMA200: sma200,
+		EMA20:  ema20,
+	}
 }
 
 // buildDailyIndicators 生成日线指标
@@ -488,18 +519,54 @@ func takeLastFundingRates(rates []FundingRate, n int) []FundingRate {
 	return rates[len(rates)-n:]
 }
 
-// Format 格式化输出市场数据（按需求输出1d/4h/1h指标和K线）
+// volatilityState 根据最新 ATR14 与收盘价的比例返回波动率
+func volatilityState(atrSeries []float64, klines []Kline) (ratio float64) {
+	if len(atrSeries) == 0 || len(klines) == 0 {
+		return
+	}
+
+	latestATR := atrSeries[len(atrSeries)-1]
+	latestClose := klines[len(klines)-1].Close
+	if latestATR <= 0 || latestClose <= 0 {
+		return
+	}
+
+	ratio = latestATR / latestClose
+	return
+}
+
+// Format 格式化输出市场数据（按需求输出1w/1d/4h/1h指标和K线）
 func Format(data *Data) string {
 	var sb strings.Builder
 	const (
+		weeklyDisplayCount   = 15
 		dailyDisplayCount    = 60
-		fourHourDisplayCount = 60
+		fourHourDisplayCount = 200
 		oneHourDisplayCount  = 20
 	)
 	utc8 := time.FixedZone("UTC+8", 8*60*60)
 
 	priceStr := formatPriceWithDynamicPrecision(data.CurrentPrice)
 	sb.WriteString(fmt.Sprintf("symbol = %s, current_price = %s\n\n", data.Symbol, priceStr))
+
+	if data.Weekly != nil {
+		weeklyKlines := takeLastKlines(data.Weekly.Klines, weeklyDisplayCount)
+		weeklyRange := describeKlineRange(weeklyKlines, utc8)
+		sb.WriteString(fmt.Sprintf("1w ohlcv (latest %d, %s):\n", len(weeklyKlines), weeklyRange))
+		sb.WriteString(formatKlines(weeklyKlines, utc8))
+		sb.WriteString("\n")
+
+		ind := data.Weekly.Indicators
+		sma50 := takeLastN(ind.SMA50, weeklyDisplayCount)
+		sma200 := takeLastN(ind.SMA200, weeklyDisplayCount)
+		ema20 := takeLastN(ind.EMA20, weeklyDisplayCount)
+
+		sb.WriteString("1w Indicators (aligned with ohlcv, oldest->newest):\n")
+		sb.WriteString(fmt.Sprintf("SMA50 (per bar): %s\n", formatFloatSlice(sma50)))
+		sb.WriteString(fmt.Sprintf("SMA200 (per bar): %s\n", formatFloatSlice(sma200)))
+		sb.WriteString(fmt.Sprintf("EMA20 (per bar): %s\n", formatFloatSlice(ema20)))
+		sb.WriteString("\n")
+	}
 
 	if data.Daily != nil {
 		dailyKlines := takeLastKlines(data.Daily.Klines, dailyDisplayCount)
@@ -554,6 +621,7 @@ func Format(data *Data) string {
 		bollUpper := takeLastN(ind.BollUpper20_2, 60)
 		bollMiddle := takeLastN(ind.BollMiddle20_2, 60)
 		bollLower := takeLastN(ind.BollLower20_2, 60)
+		volRatio := volatilityState(ind.ATR14, fourHKlines)
 
 		sb.WriteString("4h Indicators (aligned with ohlcv, oldest->newest):\n")
 		sb.WriteString(fmt.Sprintf("EMA20/50/100 (per bar): %s | %s | %s\n",
@@ -567,6 +635,7 @@ func Format(data *Data) string {
 			formatFloatSlice(macdHist)))
 		sb.WriteString(fmt.Sprintf("RSI14 (last %d): %s\n", len(rsi14), formatFloatSlice(rsi14)))
 		sb.WriteString(fmt.Sprintf("ATR14 (last %d): %s\n", len(atr14), formatFloatSlice(atr14)))
+		sb.WriteString(fmt.Sprintf("Volatility state (ATR14/close=%.2f%%)\n", volRatio*100))
 		sb.WriteString(fmt.Sprintf("ADX14 (+DI/-DI) (last %d): adx %s | +di %s | -di %s\n",
 			len(adx14),
 			formatFloatSlice(adx14),

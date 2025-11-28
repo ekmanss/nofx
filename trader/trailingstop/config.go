@@ -115,39 +115,54 @@ var defaultConfig = &Config{
 		// BTC 策略：稳健的一击脱离
 		// ==========================================
 		"btc": {
-			ATRPeriod:           5,
-			ATRInterval:         "4h",
-			PhaseStartBreakeven: 0.5,
-			MinLockedR:          0.3,
-			MaxRLockAlpha:       0.65,
+			// 4H K线 ATR 周期
+			ATRPeriod:   5, // 计算过去 20 小时的波动率
+			ATRInterval: "4h",
+
+			// 【核心修改 1：极大放宽保本触发线】
+			// BTC 经常在浮盈 0.6R-0.8R 处回撤。
+			// 我们硬气一点，不到 1R (约 1.5% 涨跌幅) 坚决不移动止损。
+			// 宁可被打止损，也不能被噪音洗下车，错失后面的 3R。
+			PhaseStartBreakeven: 1.0,
+
+			// 【核心修改 2：保本只保手续费】
+			// 触发保本后，只锁 0.1R。不要锁太多，给价格回踩开仓价留出呼吸空间。
+			MinLockedR: 0.1,
+
+			// 限制最大回撤锁定比例，防止在 R 值很高时回吐太多，但也不要锁太死
+			MaxRLockAlpha: 0.60,
 
 			Ranges: []TrailingRange{
-				// 【阶段 1：启动期】 0 - 1.0R
-				// 不要太快锁死，让价格有空间波动；
-				// 锁 0.25R 左右，既有保护，又不至于止损贴得太近。
-				{MaxR: 1.2, LockRatio: 0.3, BaseATRMultiplier: 2.8, Label: "🛡️ BTC 启动保护"},
+				// 【阶段 1：静默期】 0R - 1.2R
+				// 策略：装死。
+				// 只要价格没冲过 1.2R，就用非常宽的 ATR (3.5倍) 或者干脆不 trailing。
+				// 我们赌的就是它能突破，如果不能，就止损认赔，不搞微操。
+				{MaxR: 1.2, LockRatio: 0.05, BaseATRMultiplier: 3.5, Label: "🧘 BTC 波动容忍区"},
 
-				// 【阶段 2：达标期】 1.0R - 2.0R
-				// 你的目标大概率在这个区间。
-				// 收紧 ATR 系数到 1.5，开始认真保护已有利润。
-				{MaxR: 2.2, LockRatio: 0.6, BaseATRMultiplier: 1.6, Label: "💰 BTC 达标锁利"},
+				// 【阶段 2：趋势确立期】 1.2R - 2.8R
+				// 策略：跟随。
+				// 利润已经打出来了，开始把止损上移。BaseATRMultiplier 2.0 是 BTC 4h 趋势的黄金均线距离。
+				{MaxR: 2.8, LockRatio: 0.5, BaseATRMultiplier: 2.0, Label: "📈 BTC 趋势跟随"},
 
-				// 【阶段 3：超预期】 > 2.0R
-				// 超预期大单，紧贴价格（1.0 ATR），防止从高位砸回去。
-				{MaxR: 0, LockRatio: 0.85, BaseATRMultiplier: 1.1, Label: "🚀 BTC 加速冲顶"},
+				// 【阶段 3：止盈收割期】 > 2.8R
+				// 策略：收网。
+				// 既然已经到了你的 3R 目标区，可以激进一点锁利润了。
+				{MaxR: 0, LockRatio: 0.8, BaseATRMultiplier: 1.2, Label: "💰 BTC 止盈收割"},
 			},
 
-			// BTC 波动率修正：
-			// 低波动（横盘）更敏感一点，高波动（插针）稍微放宽，防扫损。
+			// 波动率自适应：BTC 波动率低时（横盘），ATR 止损要收紧，防止阴跌。
 			RegimeAdjustment: RegimeAdjustment{
-				LowThreshold:   0.008,
-				LowMultiplier:  0.9,
-				HighThreshold:  0.03,
-				HighMultiplier: 1.2,
+				LowThreshold:   0.008, // 4h 波动率低于 0.8%
+				LowMultiplier:  0.8,   // 止损收紧
+				HighThreshold:  0.04,  // 4h 波动率高于 4% (大暴涨/暴跌)
+				HighMultiplier: 1.5,   // 止损放宽，防插针
 			},
 
-			TPlusTwoDuration:  6 * time.Hour,
-			TPlusTwoLockRatio: 0.7,
+			// 【核心修改 3：给足时间】
+			// 4h 级别的趋势，24 小时（6 根 K 线）是最小的检验周期。
+			// 如果 24 小时后 R 还没跑出来，说明趋势大概率没了，这时候才强制离场。
+			TPlusTwoDuration:  24 * time.Hour,
+			TPlusTwoLockRatio: 0.9,
 		},
 
 		// ==========================================

@@ -6,10 +6,24 @@ import "time"
 type Data struct {
 	Symbol       string
 	CurrentPrice float64
+	Weekly       *WeeklyData
 	Daily        *DailyData
 	FourHour     *FourHourData
 	OneHour      *OneHourData
 	FundingRates []FundingRate
+}
+
+// WeeklyData 周线数据
+type WeeklyData struct {
+	Klines     []Kline
+	Indicators WeeklyIndicators
+}
+
+// WeeklyIndicators 周线指标
+type WeeklyIndicators struct {
+	SMA50  []float64
+	SMA200 []float64
+	EMA20  []float64
 }
 
 // DailyData 日线数据（仅保留最近 250 根）
