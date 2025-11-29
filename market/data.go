@@ -539,9 +539,9 @@ func volatilityState(atrSeries []float64, klines []Kline) (ratio float64) {
 func Format(data *Data) string {
 	var sb strings.Builder
 	const (
-		weeklyDisplayCount   = 15
+		weeklyDisplayCount   = 10
 		dailyDisplayCount    = 60
-		fourHourDisplayCount = 200
+		fourHourDisplayCount = 80
 		oneHourDisplayCount  = 20
 	)
 	utc8 := time.FixedZone("UTC+8", 8*60*60)
