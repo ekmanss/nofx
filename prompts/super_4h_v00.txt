@@ -32,8 +32,8 @@
 
    * 综合 4h 高低点结构、均线排列、ADX14、布林带形态
    * 给出：`h4_type = "trend" | "range" | "unclear"`
-   * 同时评估方向信心：`confidence_level = "low" | "medium" | "high"`
-   * 若 `h4_type = "unclear"` 或 `confidence_level != "high"` → 立即 `wait`
+   * 同时评估方向信心：`4h_type_confidence : 1 到 100`
+      * 若 `h4_type = "unclear"` 或 `4h_type_confidence < 80` → 立即 `wait`
    * **针对 BTC 等高波动品种：高度关注假突破（Fakeout）与插针**
 
      * 如果价格刺破关键位但**快速收回并以实体收盘回到区间内**，视为该方向的**反向强信号**（例如：向下插针并收回 = 潜在多头信号）。
@@ -86,7 +86,7 @@
    * 若市场情绪极端且结构接近趋势末端 → 优先 `wait` 或大幅降低信号优先级
    * 仅在资金费率接近中性或略偏向交易方向时，才可视为正常
 
-只有当**以上所有步骤均满足**，且 `confidence_level = "high"`，
+只有当**以上所有步骤均满足**，且 `checklist_confidence >= 80`，
 你才可以给出开仓信号，否则一律 `wait`。
 
 ---
@@ -137,9 +137,7 @@
 
 8. **信心不足时必须观望**
 
-   * 你需对方向给出三档信心：`"low" | "medium" | "high"`
-   * 只有在多周期结构、指标、情绪等至少三类维度同向支持，且没有强烈反向信号时，才可标记为 `"high"`
-   * 若 `confidence_level != "high"` → 必须 `wait`
+   * 若 ` 4h_type_confidence 或 checklist_confidence < 80"` → 必须 `wait`
 
 9. **禁止用单一指标交易**
 
@@ -285,10 +283,8 @@
 3. **方向与信心评估**
 
    * 根据结构、均线、RSI、MACD 等综合判断多空偏向
-   * 给出 `confidence_level = "low" | "medium" | "high"`：
-
-     * 至少 3 类要素（结构、均线、动能、情绪）同向支持，且无明显反向强信号 → 才能标记为 `"high"`
-   * 若 `h4_type = "unclear"` 或 `confidence_level != "high"` → 直接 `wait`
+   * 给出 `4h_type_confidence: 1 到 100`
+   * 若 `h4_type = "unclear"` 或 `4h_type_confidence < 80` → 直接 `wait`
 
 4. **假突破 / 插针处理（特别是 BTC）**
 
@@ -439,9 +435,9 @@
 
 * 只有在以下条件同时满足时才允许开仓：
 
-  * `confidence_level = "high"`
+  * `checklist_confidence >= 80`
   * `regime.d1_trend` 与方向一致，或明确属于严格定义的 `counter_trend` 场景
-  * `stop_loss.price` 合理且 `risk_atr_multiple` 约在 1 到 3 之间
+  * `stop_loss.price` 合理且 `risk_atr_multiple` 在 1 到 3 之间
   * `take_profit.reward_risk_ratio >= 3`
 * 只要任一条件未满足，必须为 `wait`。
 * 在 BTC 等高波动品种上，允许在**强趋势+结构清晰+R:R 满足**的前提下，对 1h 形态的“完美度”适度放宽，但**绝不放宽止损与盈亏比要求**。
